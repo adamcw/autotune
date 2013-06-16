@@ -1,14 +1,58 @@
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 #include <time.h>
 #include "memory.h"
+#if defined(__APPLE__) && defined(__MACH__)
+	#include <mach/mach.h>
+#elif defined(__unix__) || defined(__unix) || defined(unix) || (defined(__APPLE__) && defined(__MACH__))
+	#include <unistd.h>
+	#include <sys/resource.h>
+#endif
+
+/**
+ * \brief Get current program memory usage in kilobytes.
+ *
+ * \return A size_t representing the current program memory usage in kilobytes.
+ */
+int my_mem() {
+#if defined(__APPLE__) && defined(__MACH__)
+	struct mach_task_basic_info info;
+	mach_msg_type_number_t infoCount;
+	
+	infoCount = MACH_TASK_BASIC_INFO_COUNT;
+	if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &infoCount ) != KERN_SUCCESS) {
+		return (int)0;
+	}
+	return (int)(info.resident_size / 1024L);
+#else 
+	long rss;;
+	FILE* fp;
+	
+	rss = 0L;
+	fp = NULL;
+
+	if ((fp = fopen( "/proc/self/statm", "r" )) == NULL) {
+		return (int)0L;
+	}
+
+	if (fscanf(fp, "%*s%ld", &rss) != 1) {
+		fclose(fp);
+		return (int)0L;
+	}
+
+	fclose(fp);
+
+	return (int)((size_t)rss * (size_t)sysconf(_SC_PAGESIZE) / 1024L);
+#endif
+}
 
 /**
  * \brief A safe implementation of malloc
  *
- * A safe implementation of malloc. Will automatically try to malloc again in
- * case of failure.
+ * A safe implementation of malloc. Will exit if no memory available 
  *
  * \param[in] size The size of memory to be allocated.
  *
@@ -20,13 +64,7 @@ void *my_malloc(size_t size) {
 	if (size > 0) {
 		ptr = malloc(size);
 		if (ptr == NULL) {
-			printf("my_malloc: out of memory\n");
-			while (ptr == NULL) {
-				//sleep(10000);
-				//printf("my_malloc: reattempting\n");
-				ptr = malloc(size);
-			}
-			printf("my_malloc: success\n");
+			exit(1);
 		}
 		return ptr;
 	}
@@ -37,8 +75,7 @@ void *my_malloc(size_t size) {
 /**
  * \brief A safe implementation of realloc
  *
- * A safe implementation of realloc. Will automatically try to realloc again in
- * case of failure.
+ * A safe implementation of realloc. Will exit if no memory available 
  *
  * \param[in] ptr The pointer to the memory block to be reallocated
  * \param[in] size the size the memory block should be resized to
@@ -50,13 +87,7 @@ void *my_realloc(void *ptr, size_t size) {
 
 	ptr2 = realloc(ptr, size);
 	if (ptr2 == NULL && size > 0) {
-		printf("my_realloc: out of memory\n");
-		while (ptr2 == NULL) {
-			//sleep(10000);
-			//printf("my_realloc: reattempting\n");
-			ptr2 = realloc(ptr, size);
-		}
-		printf("my_realloc: success\n");
+		exit(1);
 	}
 	return ptr2;
 }
@@ -64,8 +95,7 @@ void *my_realloc(void *ptr, size_t size) {
 /**
  * \brief A safe implementation of calloc
  *
- * A safe implementation of calloc. Will automatically try to calloc again in
- * case of failure.
+ * A safe implementation of calloc. Will exit if no memory available 
  *
  * \param[in] n The number of elements to allocate
  * \param[in] size The size of each element
@@ -79,13 +109,7 @@ void *my_calloc(int n, int size)
 	if (n > 0 && size > 0) {
 		ptr = calloc(n, size);
 		if (ptr == NULL) {
-			printf("my_calloc: out of memory\n");
-			while (ptr == NULL) {
-				//sleep(10000);
-				//printf("my_calloc: reattempting\n");
-				ptr = calloc(n, size);
-			}
-			printf("my_calloc: success\n");
+			exit(1);
 		}
 		return ptr;
 	}
@@ -102,15 +126,16 @@ void *my_calloc(int n, int size)
  *
  * \return A pointer to the newly allocated memory block
  */
-void *my_2d_calloc(int n1, int n2, int size)        
+void *my_2d_calloc(int n1, int n2, int size)		  
 {
 	int i;
 	void **pptr;
 
 	pptr = (void **)my_calloc(n1, sizeof(void *));
-      
-	for (i=0; i<n1; i++)
+		
+	for (i = 0; i < n1; i++) {
 		pptr[i] = my_calloc(n2, size);
+	}
 
 	return pptr;
 }
@@ -131,10 +156,11 @@ void *my_3d_calloc(int n1, int n2, int n3, int size)
 	void ***ppptr;
 
 	ppptr = (void ***)my_calloc(n1, sizeof(void **));
-      
-	for (i=0; i<n1; i++)
+		
+	for (i = 0; i < n1; i++) {
 		ppptr[i] = (void **)my_2d_calloc(n2, n3, size);
-      
+	}
+
 	return ppptr;
 }
 
@@ -148,9 +174,10 @@ void my_2d_free(int n1, void **pptr)
 {
 	int i;
 
-	for (i=0; i<n1; i++)
+	for (i = 0; i < n1; i++) {
 		free(pptr[i]);
-     
+	}
+	  
 	free(pptr);
 }
 
@@ -165,8 +192,9 @@ void my_3d_free(int n1, int n2, void ***ppptr)
 {
 	int i;
 
-	for (i=0; i<n1; i++)
+	for (i = 0; i < n1; i++) {
 		my_2d_free(n2, ppptr[i]);
+	}
 
 	free(ppptr);
 }

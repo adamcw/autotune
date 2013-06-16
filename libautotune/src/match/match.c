@@ -118,9 +118,10 @@ void m_update_dots_and_lines_into_bfs(MATCHING *matching, BFS_GRAPH *g, int undo
 		// If the dot already has a BFS associated, then it's likely that the
 		// BFS wasn't cleared properly from previous rounds.
 		if (a->bfs != NULL) {
-			printf("%d, %d, %ld | %ld, %ld\n", a->i, a->i, a->t, matching->t, matching->t_bfs);
-			printf("Dot already allocated to BFS.\n");
-			assert(a->bfs == NULL);
+			bfs_remove_vertex(g, a->bfs);
+			//printf("%d, %d, %ld | %ld, %ld\n", a->i, a->i, a->t, matching->t, matching->t_bfs);
+			//printf("Dot already allocated to BFS.\n");
+			//assert(a->bfs == NULL);
 		}
 		
 		//printf("%d, %d, %ld | %ld, %ld\n", a->i, a->i, a->t, matching->t, matching->t_bfs);
@@ -255,8 +256,6 @@ int m_add_vertex_to_blossomv(BLOSSOMV *bv, VERTEX *v, int pos) {
  * \param[in] wt The weight of the edge 
  */
 void m_add_edge_to_blossomv(BLOSSOMV *bv, int a, int b, int wt) {
-	//printf("Adding Edge to Blossom V: %d %d %d\n", a, b, wt);
-	
 	bv->edges[2*bv->num_edges] = a;
 	bv->edges[2*bv->num_edges+1] = b;
 	bv->weights[bv->num_edges] = wt;
@@ -281,8 +280,6 @@ void m_create_augmented_edge(MATCHING *m, VERTEX *v1, VERTEX *v2) {
 	CDLL_NODE *n;
 	AUG_EDGE *ae;
 	
-	//printf("Create augmented edge. %d, %d\n", v1->v_num, v2->v_num);
-
 	ae = (AUG_EDGE *)my_malloc(sizeof(AUG_EDGE));
 	ae->va = v1;
 	ae->vb = v2;	
@@ -390,6 +387,8 @@ void m_create_augmented_edges(MATCHING *matching, BLOSSOMV *bv, int undo) {
 	// a hash table, this still requires a loop of the edges to create, and
 	// it's not readily apparent how you could keep these hash tables from
 	// round to round given that NodeIds change every round.
+	
+
 	for (i = 0; i < bv->num_edges; i++) {
 		if (matching->pm->GetSolution(i) == 1) {
 			if (bv->weights[i] > 0) {
@@ -399,7 +398,7 @@ void m_create_augmented_edges(MATCHING *matching, BLOSSOMV *bv, int undo) {
 				if (v1->matched_edge && v1->matched_edge->dest_vertex == v2) {
 					continue;
 				}
-
+	
 				// Delete the old matched edge
 				if (v1->matched_edge) {
 					assert(v1->matched_edge->source_vertex == v1);
@@ -535,8 +534,6 @@ void m_mwpm(MATCHING *matching, int undo) {
 		v_num1 = m_add_vertex_to_blossomv(bv, a->v, v_num);
 
 		if (a->bfs != NULL) {
-			//printf("INIT SEARCH: %d: %d, %d, %ld\n", a->v->v_num, a->i, a->j, a->t);
-			
 			// This init adds about 2s to 100 changes without augmentation 
 			bfs_init_search(matching->g, a->bfs);
 
@@ -563,12 +560,9 @@ void m_mwpm(MATCHING *matching, int undo) {
 					continue;
 				}
 
-				//printf("--> %d: %d, %d, %ld\n", b->v->v_num, b->i, b->j, b->t);
-
 				// We have a boundary, so we need to "create" a vertex in
 				// the Blossom V graph so we can create an edge.
 				if (m_is_boundary(b->v)) {
-
 					// Already found a closer boundary for this vertex
 					if (found_bdy == TRUE) {
 						bfsv1 = bfs_get_next_v(matching->g);
@@ -581,6 +575,15 @@ void m_mwpm(MATCHING *matching, int undo) {
 
 					// Connect this boundary to all other inserted boundaries
 					for (i = matching->num_vertices; i <= v_num2 - 1; i++) {
+						// We do not want to connect normal boundaries to the
+						// temporal boundaries, as this leads to matching
+						// vertices to things other than the temporal boundary.
+						// The temporal boundary is less of a boundary and more
+						// of a fixed matching to avoid issues with BlossomV
+						// rematching after t_delete.
+						if (bv->vertices[i]->t == -INT_MAX) {
+							continue;
+						}
 						m_add_edge_to_blossomv(bv, v_num2, i, 0);
 					}	
 				} 
@@ -601,7 +604,6 @@ void m_mwpm(MATCHING *matching, int undo) {
 					v_num2 = b->v->v_num - offset;
 				}
 			
-				//printf("Added edge\n");
 				m_add_edge_to_blossomv(bv, v_num1, v_num2, bfsv1->d);
 
 				bfsv1 = bfs_get_next_v(matching->g);
@@ -697,7 +699,6 @@ int m_time_delete(MATCHING *m) {
 		// results.
 		if (v->matched_edge) {
 			v2 = v->matched_edge->dest_vertex;
-			
 			if (v2->t >= t) {
 				a = v2->dot;
 				b = m_create_temporal_boundary();
@@ -1346,14 +1347,17 @@ void m_print_lattice(MATCHING *matching) {
 	while (n != matching->dots) {
 		dot = (DOT *)n->key;
 		if (dot->t < matching->t-10) break;
-		if (dot->v != NULL) printf("v(%d, %d, %d, %ld) ", dot->v->v_num, dot->v->i, dot->v->j, dot->v->t);
-		printf("(%d, %d, %ld, %p) - ", dot->i, dot->j, dot->t, dot);
+		// if (dot->v != NULL) printf("v(%d, %d, %d, %ld) ", dot->v->v_num, dot->v->i, dot->v->j, dot->v->t);
+		if (dot->v != NULL) printf("v%d ", dot->v->v_num);
+		// printf("(%d, %d, %ld, %p) - ", dot->i, dot->j, dot->t, dot);
+		printf("(%d, %d, %ld) - ", dot->i, dot->j, dot->t);
 		lln = dot->lines;
 		while (lln != NULL) {
 			line = (LINE *)lln->key;
 			dd = (line->a == dot) ? line->b : line->a;
-			if (dd->v != NULL) printf("v(%d, %d, %d, %ld) ", dd->v->v_num, dd->v->i, dd->v->j, dd->v->t);
-			printf("(%d, %d, %ld, %p) ", dd->i, dd->j, dd->t, dd);
+			// if (dd->v != NULL) printf("v(%d, %d, %d, %ld) ", dd->v->v_num, dd->v->i, dd->v->j, dd->v->t);
+			// printf("(%d, %d, %ld, %p) ", dd->i, dd->j, dd->t, dd);
+			printf("(%d, %d, %ld, %d) ", dd->i, dd->j, dd->t, line->wt);
 			lln = lln->next;
 		}
 		printf("\n");
@@ -1414,7 +1418,7 @@ void m_print_graph(MATCHING *matching) {
 		return;
 	}
 
-	printf("num_v: %d", matching->num_vertices);
+	printf("num_v: %d\n", matching->num_vertices);
 
 	v = (VERTEX *)matching->graph->next->key;
 	while (v != NULL) {

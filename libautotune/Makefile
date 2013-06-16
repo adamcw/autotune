@@ -1,5 +1,9 @@
 CXX ?= g++
+ifeq ($(ATDEBUG),1)
+CXXFLAGS = -g3 -Wall -Wextra -lm
+else
 CXXFLAGS = -O3 -Wall -Wextra -lm
+endif
 
 LDFLAGS =
 INCDIRS =
@@ -43,3 +47,4 @@ dirs:
 
 
 .PHONY: dirs clean
+

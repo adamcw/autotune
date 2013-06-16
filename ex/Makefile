@@ -18,7 +18,13 @@ ifeq ($(shell uname -s),Linux)
 endif
 
 CXX ?= g++
+
+ifeq ($(ATDEBUG),1)
+CXXFLAGS = -g3 -Wall -Wextra -lm $(INCDIRS)
+else
 CXXFLAGS = -O3 -Wall -Wextra -lm $(INCDIRS)
+endif
+
 
 DIRS = src
 
@@ -67,3 +73,4 @@ dirs:
 	mkdir -p $(foreach DIR,$(DIRS),bin dep/$(DIR) obj/$(DIR))
 
 .PHONY: dirs clean 
+

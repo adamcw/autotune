@@ -10,6 +10,21 @@ def run_command(command, filename, folder="./", cwd="./"):
     command = [x for x in command if x]
     return subprocess.Popen(["nohup"] + command, stdin=fp, stdout=fp, stderr=fp, cwd=cwd).pid
 
+def pbs_command(command, filename, pbs_file, job_name, folder="./", cwd="./", queue="ashley", hours="200"):
+    command_string = " ".join([x for x in command if x])
+
+    fp = open(os.path.join(folder, pbs_file), 'w+')
+    fp.write("#!/bin/bash\n")
+    fp.write("#PBS -S /bin/bash\n")
+    fp.write("#PBS -N %s\n" % job_name)
+    fp.write("#PBS -q %s\n" % queue)
+    fp.write("#PBS -l walltime=%s:00:00\n" % hours)
+    fp.write("cd $PBS_O_WORKDIR\n")
+    fp.write("%s > %s" % (command_string, filename)) 
+    fp.close()
+
+    return subprocess.call(["qsub", pbs_file], cwd=cwd)
+
 def flatten(l, ltypes=(list, tuple)):
     ltype = type(l)
     l = list(l)
@@ -47,4 +62,10 @@ def permute_runs(schema):
                 'folder': run['folder'].format(**b),
                 'options': b,
             })
+
+            if run['queue']:
+                runs[-1].update({'queue': run['queue']})
+            if run['wallhours']:
+                runs[-1].update({'wallhours': run['wallhours']})
+
     return runs

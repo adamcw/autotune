@@ -1502,6 +1502,8 @@ ERROR_MODEL *qc_create_error_model(const char *fname) {
  * \param[in] em The error model to be freed 
  */
 void qc_free_error_model(ERROR_MODEL *em) {
+	if (em == NULL) return;
+
 	if (em->num_lines > 0) my_2d_free(em->num_lines, (void **)em->raw_em);
 	if (em->raw_rel_p != NULL) free(em->raw_rel_p);
 	if (em->sum_raw_rel_p != NULL) free(em->sum_raw_rel_p);
@@ -1571,6 +1573,7 @@ void qc_random_raw_e(QC *qc, QUBIT *q, ERROR_MODEL *em, double p,
 		// that at least one of the errors will be applied.
 		if (u < p * em->sum_raw_rel_p[i]) {
 			q->e = multiply_es(q->e, em->raw_em[i][1]);
+		//	printf("i: %d, j: %d, k: %d, t: %ld:%ld, op: %ld\n", q->i, q->j, q->k, q->t/CYCLE_T, q->t%CYCLE_T, em->raw_em[i][1]);
 			return;
 		}
 	}
@@ -1614,6 +1617,7 @@ void qc_random_raw_e2(QC *qc, QUBIT *q1, QUBIT *q2, ERROR_MODEL *em, double p,
 		if (u < p * em->sum_raw_rel_p[i]) {
 			q1->e = multiply_es(q1->e, em->raw_em[i][1]);
 			q2->e = multiply_es(q2->e, em->raw_em[i][2]);
+		//	printf("i1: %d, j1: %d, k1: %d, i2, %d, j2: %d, k2: %d, t: %ld:%ld, op1: %ld, op2: %ld\n", q1->i, q1->j, q1->k, q2->i, q2->j, q2->k, q1->t/CYCLE_T, q1->t%CYCLE_T, em->raw_em[i][1], em->raw_em[i][2]);
 			return;
 		}
 	}
@@ -3806,7 +3810,8 @@ void qc_free_layer(LAYER *layer, int n) {
  * \return The newly created \ref block
  */
 BLOCK *qc_create_block(RECIPE *recipe, BALL *ball, int type) {
-	int i, d_i, d_j, d_t, wt;
+	int i, d_i, d_j, wt;
+	long int d_t;
 	HT *ht;
 	STICK *stick;
 	BLOCK *block;
@@ -4262,7 +4267,7 @@ void qc_free_offset(OFFSET *offset) {
  *
  * \return 1 if the boot up process completed, 0 otherwise
  */
-int qc_boot_up(QC *qc, RECIPE *recipe, int n, int m, int switch_time) {
+int qc_boot_up(QC *qc, RECIPE *recipe, int n, int m, long int switch_time) {
 	if (recipe->type == RECIPE_INFINITE) {
 		return qc_boot_up_infinite(qc, recipe, n, m, switch_time);
 	} else {
@@ -4283,12 +4288,13 @@ int qc_boot_up(QC *qc, RECIPE *recipe, int n, int m, int switch_time) {
  *
  * \return 1 if the boot up process completed, 0 otherwise
  */
-int qc_boot_up_infinite(QC *qc, RECIPE *recipe, int n, int m, int switch_time) {
+int qc_boot_up_infinite(QC *qc, RECIPE *recipe, int n, int m, long int switch_time) {
 	LL_NODE *ll;
 	LAYER *layer;
 	BLOCK *block;
 	OFFSET *offset;
-	int num_layers, layer_big_t, i, j;
+	int num_layers, i, j;
+	long int layer_big_t;
 
 	num_layers = recipe->num_layers;
 

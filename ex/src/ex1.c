@@ -336,7 +336,7 @@ void simulate_recipe(ARGS *args, RECIPE *recipe) {
 	DP_QC *dp_qc;
 	QC *qc;
 
-	int big_t;
+	long int big_t;
 
 	sc_dp_qc = create_sc_dp_qc(args, recipe);
 	dp_qc = sc_dp_qc->dp_qc;
@@ -392,7 +392,17 @@ void simulate_recipe(ARGS *args, RECIPE *recipe) {
 		assert(qc->big_t == big_t+1);
 		big_t++;
 	}
-	
+
+	/*
+	printf("not in test_correct:\n");
+	printf("primal:\n");
+	// m_print_lattice(qc->m_pr);
+	m_print_graph(qc->m_pr);
+	printf("dual:\n");
+	// m_print_lattice(qc->m_du);
+	m_print_graph(qc->m_du);
+	*/
+
 	free_sc_dp_qc(sc_dp_qc);
 }
 
@@ -1348,8 +1358,8 @@ void test_correct(SC_DP_QC *sc_dp_qc, FILE *out) {
 	// boundary. An Z-error is a disagreement between the state of the qubit in
 	// the qc and the state of the correction in the frame. 
 	//
-	// If there is an Z error on the qubit, but no Z correction, or the reverse
-	// with an Z correction but no Z error on the qubit, then an error along
+	// If there is a Z error on the qubit, but no Z correction, or the reverse
+	// with a Z correction but no Z error on the qubit, then an error along
 	// the boundary has occured. 
 	count = 0;
 	for (i = 0; i < n; i += 2) {

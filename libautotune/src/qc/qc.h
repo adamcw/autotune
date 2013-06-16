@@ -330,13 +330,13 @@ struct error {
  * \brief A detection event
  */
 struct de {
-    /** The \ref set the \ref de belongs to */
+	/** The \ref set the \ref de belongs to */
 	SET *set;
 
-    /** The \ref error that was detected */
+	/** The \ref error that was detected */
 	ERROR *error;
 
-    /** The label of the \ref error that was detected */
+	/** The label of the \ref error that was detected */
 	long int label;
 
 	/** \brief A \ref qc contains a \ref cdll of all \ref de%s in it. This is the
@@ -344,7 +344,7 @@ struct de {
 	 */
 	CDLL_NODE *qc_cdlln;
 
-    /** A stored copy of the \ref de, used to restore the \ref de to a previous state */
+	/** A stored copy of the \ref de, used to restore the \ref de to a previous state */
 	DE *copy;
 };
 
@@ -353,13 +353,13 @@ struct de {
  * \brief A syndrome qubit
  */
 struct syndrome {
-    /** The t that the \ref syndrome was last measured */
+	/** The t that the \ref syndrome was last measured */
 	long int t;
 
-    /** The index of this \ref syndrome in the \ref syndrome \ref heap in \ref qc */
+	/** The index of this \ref syndrome in the \ref syndrome \ref heap in \ref qc */
 	int qc_heap_i;
 
-    /** The \ref set that this \ref syndrome belongs to */
+	/** The \ref set that this \ref syndrome belongs to */
 	SET *set;
 
 	/** \brief A \ref set contains a \ref cdll of all \ref syndrome%s in it. This is the
@@ -367,7 +367,7 @@ struct syndrome {
 	 */
 	CDLL_NODE *set_cdlln;
 
-    /** A stored copy of the \ref syndrome, used to restore the \ref syndrome to a previous state */
+	/** A stored copy of the \ref syndrome, used to restore the \ref syndrome to a previous state */
 	SYNDROME *copy;
 };
 
@@ -376,41 +376,41 @@ struct syndrome {
  * \brief A set
  */
 struct set {
-    /** The type of the \ref set (PRIMAL, DUAL, PRIMAL_BOUNDARY or
-     * DUAL_BOUNDARY) */
+	/** The type of the \ref set (PRIMAL, DUAL, PRIMAL_BOUNDARY or
+	 * DUAL_BOUNDARY) */
 	int type;
 
-    /** The i coordinate */
+	/** The i coordinate */
 	int i;
 
-    /** The j coordinate */
-    int j;
+	/** The j coordinate */
+	int j;
 
-    /** The big_t of the \ref set */
+	/** The big_t of the \ref set */
 	long int big_t;
 
-    /** The index of this \ref set in the \ref set \ref heap in \ref qc */
+	/** The index of this \ref set in the \ref set \ref heap in \ref qc */
 	int qc_heap_i;
 
-    /** The number of \ref measurement%s left for this \ref set to be complete */
+	/** The number of \ref measurement%s left for this \ref set to be complete */
 	int num_meas_left;
 
-    /** The boundary this \ref set is closest to */
+	/** The boundary this \ref set is closest to */
 	SET *bdy;
 
-    /** A \ref cdll of \ref syndrome%s for this \ref set */
+	/** A \ref cdll of \ref syndrome%s for this \ref set */
 	CDLL_NODE *syn_cdll;
 
-    /** The number of \ref error%s in this \ref set */
+	/** The number of \ref error%s in this \ref set */
 	int num_errors;
 
-    /** A \ref cdlln of \ref measurement%s on this \ref set */
+	/** A \ref cdlln of \ref measurement%s on this \ref set */
 	CDLL_NODE *mt_cdll;
 
-    /** The \ref ball associated with this \ref set */
+	/** The \ref ball associated with this \ref set */
 	BALL *ball;
 
-    /** A stored copy of the \ref set, used to restore the \ref set to a previous state */
+	/** A stored copy of the \ref set, used to restore the \ref set to a previous state */
 	SET *copy;
 };
 
@@ -422,16 +422,16 @@ struct measurement {
 	/** The stochastic measurement result (-1, 0, 1) */
 	int m; 
 
-    /** The number of \ref set%s that this \ref measurement is in */
+	/** The number of \ref set%s that this \ref measurement is in */
 	int num_parent_sets;
 
-    /** The number of \ref error%s in the \ref measurement */
+	/** The number of \ref error%s in the \ref measurement */
 	int num_errors;
 
-    /** A \ref cdll of \ref error%s in the \ref measurement */
+	/** A \ref cdll of \ref error%s in the \ref measurement */
 	CDLL_NODE *error_cdll;
 
-    /** A stored copy of the \ref measurement, used to restore the \ref measurement to a previous state */
+	/** A stored copy of the \ref measurement, used to restore the \ref measurement to a previous state */
 	MEASUREMENT *copy;
 };
 
@@ -440,22 +440,22 @@ struct measurement {
  * \brief A nest 
  */
 struct nest {
-    /** A \ref cdll of all the \ref ball%s in the \ref nest */
+	/** A \ref cdll of all the \ref ball%s in the \ref nest */
 	CDLL_NODE *ball_cdll;
 
-    /** A ::CDLL_NODE of the last \ref ball to be turned into a \ref block */
+	/** A ::CDLL_NODE of the last \ref ball to be turned into a \ref block */
 	CDLL_NODE *last_blocked_ball_cdlln;
 
-    /** A ::CDLL_NODE of the last \ref ball converted into a \ref dot */
+	/** A ::CDLL_NODE of the last \ref ball converted into a \ref dot */
 	CDLL_NODE *last_converted_ball_cdlln;
 
-    /** A \ref cdll of all the \ref stick%s in the \ref nest */
+	/** A \ref cdll of all the \ref stick%s in the \ref nest */
 	CDLL_NODE *stick_cdll;
 
-    /** A \ref ht of all the \ref stick%s in the \ref nest */ 
+	/** A \ref ht of all the \ref stick%s in the \ref nest */ 
 	HT *stick_ht;
 
-    /** A stored copy of the \ref nest, used to restore the \ref nest to a previous state */
+	/** A stored copy of the \ref nest, used to restore the \ref nest to a previous state */
 	NEST *copy;
 };
 
@@ -604,22 +604,22 @@ struct block {
  * \brief An offset 
  */
 struct offset {
-    /** The unique ID of the offset */
+	/** The unique ID of the offset */
 	int id;
 
-    /** The offset in the i dimension */
+	/** The offset in the i dimension */
 	int i;
 
-    /** The offset in the j dimension */
-    int j;
+	/** The offset in the j dimension */
+	int j;
 
-    /** The offset in the big_t dimension */
+	/** The offset in the big_t dimension */
 	long int big_t;
 
-    /** The type of \ref offset */
+	/** The type of \ref offset */
 	int type;
 
-    /** The weight of the \ref offset */
+	/** The weight of the \ref offset */
 	int wt;
 };
 
@@ -802,8 +802,8 @@ int qc_offset_lt(void *k1, void *k2);
 void qc_free_offset(OFFSET *offset);
 
 // BOOTUP FUNCTIONS
-int qc_boot_up(QC *qc, RECIPE *recipe, int n, int m, int switch_time); 
-int qc_boot_up_infinite(QC *qc, RECIPE *recipe, int n, int m, int switch_time);
+int qc_boot_up(QC *qc, RECIPE *recipe, int n, int m, long int switch_time); 
+int qc_boot_up_infinite(QC *qc, RECIPE *recipe, int n, int m, long int switch_time);
 
 // CONVERT FUNCTIONS
 void qc_convert_balls_to_dots(QC *qc, MATCHING *matching, CDLL_NODE *ball_cdll, int num_blocks);

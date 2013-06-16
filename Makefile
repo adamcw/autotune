@@ -27,3 +27,8 @@ download:
 	mkdir -p blossomv
 	tar -xzvf blossom5-v2.04.src.tar.gz -C blossomv --strip-components 1
 	rm blossom5-v2.04.src.tar.gz
+
+.PHONY: clean
+clean:
+	make -C libautotune clean
+	make -C ex clean
