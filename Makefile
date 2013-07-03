@@ -1,4 +1,4 @@
-all: process blossomv libautotune ex
+all: process blossomv libautotune polyestimate ex
 
 install: download all
 	@echo "\n#\n# Please read and understand LICENSE.md and blossomv/LICENSE.TXT before continuing.\n#"
@@ -20,6 +20,10 @@ libautotune:
 .PHONY: ex
 ex:
 	make -C ex all
+
+.PHONY: polyestimate
+polyestimate:
+	make -C tools/polyestimate all
 
 .PHONY: download
 download:

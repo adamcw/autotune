@@ -1,0 +1,10 @@
+{
+	"p_cnot": 0.001,
+	"p_H": 0.001,
+	"p_init_Z": 0.001,
+	"p_meas_Z": 0.001,
+	"p_iden_cnot": 0.001,
+	"p_iden_H": 0.001,
+	"p_iden_init_Z": 0.001,
+	"p_iden_meas_Z": 0.001
+}

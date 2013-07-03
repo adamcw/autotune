@@ -56,7 +56,13 @@ If there are build issues, you can try and build using a specific version of
     - `llist` (Linked List)
     - `memory` (Memory functions)
     - `my_time` (Timing functions)
+    - `polyestimate` (A library for estimating logical error rates given a
+        database of pre-simulated results)
     - `random` (A Mersenne Prime Twister random number generator library)
+- The `tools` that make use of `Autotune`. Exist as advanced examples that
+  provide a useful function beyond demonstrating what `Autotune` can do.
+    - `polyestimate` (A tool for estimating logical error rates given a
+        database of pre-simulated results)
 - Examples of the use of the `Autotune` library This contains the following examples:
     - `ex1` (The use of `Autotune` to implement the Surface Code on a
         solid-state quantum computer)
@@ -94,6 +100,14 @@ You can compile all targets at once:
 
     See: process/README.md
 
+## Polyestimate Tool ##
+
+    See: tools/polyestimate/README.md
+
+    Austin G. Fowler. "Polyestimate: instantaneous open source surface code analysis"
+    Awaiting Publication (2013)
+    Note: arXiv:1307.0689, http://topqec.com.au/autotune.html
+
 ## More Information ##
 
     See: MANUAL
@@ -116,10 +130,17 @@ This software cannot be used for commercial purposes, or distributed without
 permission from the author. This software is made available for research use
 only. Please contact us for alternate licensing arrangements. 
 
-You can cite Autotune using the following citation:
+You can cite `Autotune` using the following citation:
 
-    A. Fowler, A. Whiteside, A. McInnes, and A. Rabbani. "Topological code
-    Autotune." Physical Review X, Oct 2012, 2(4).
+    A. Fowler, A. Whiteside, A. McInnes, and A. Rabbani. 
+    "Topological code Autotune." Phys. Rev. X 2, 041003 (2012) 
+    Note: arXiv:1202.6111, http://topqec.com.au/autotune.html
+
+You can cite the `Polyestimate` tool using the following citation:
+
+    Austin G. Fowler. "Polyestimate: instantaneous open source surface code analysis"
+    Awaiting Publication (2013)
+    Note: arXiv:1307.0689, http://topqec.com.au/autotune.html
 
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
