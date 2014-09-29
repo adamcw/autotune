@@ -43,14 +43,16 @@ data_z = []
 files = []
 
 i = 0
-for d, stats in rows.iteritems():
+for d in sorted(rows.keys(), key=lambda x: int(x)):
+    stats = rows[d]
     d = int(d)
     first = True
     for stat in stats:
+        #print stat
         (p, x, z) = map(float, (stat['p'], stat['pX'], stat['pZ']))
         
-        if x == 0 or z == 0:
-            continue
+        #if x == 0 or z == 0:
+        #    continue
         
         if first:    
             first = False

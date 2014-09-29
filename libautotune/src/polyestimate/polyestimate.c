@@ -6,6 +6,8 @@
 #include "polyestimate.h"
 #include "../memory/memory.h"
 
+#define AVERAGE 1
+
 DATABASE *pe_load_database(char *fname) {
 	FILE *in;
 	STAT *stat;
@@ -38,7 +40,6 @@ DATABASE *pe_load_database(char *fname) {
 void pe_free_database(DATABASE *db) {
 	ll_free(db, free);
 }
-
 
 FORM *pe_calculate_formulae_from_p(double p, DATABASE *db) {
 	int i;
@@ -361,7 +362,7 @@ int pe_convert_json_to_em(cJSON *json, char *ems_dir) {
 		}
 		exit(EXIT_FAILURE);
 	}
-;
+
 	if (gate_time_ns < 0) {
 		fprintf(stderr, "%s has negative or missing gate_time_ns.\n", json->string);
 		exit(EXIT_FAILURE);
@@ -431,6 +432,10 @@ double pe_max(double a, double b, double c) {
 	return a;
 }
 
+double pe_av(double a, double b, double c) {
+	return (a+b+c)/3;
+}
+
 // Convert error model files for CNOT, Hadamard, initialization,
 // measurement and corresponding identity gates into two sets of
 // three simple error rates.
@@ -468,14 +473,24 @@ void pe_convert_ems_to_ps3s(double p, ERROR_MODEL **ems, double *ps3x, double *p
 	ppxi = pxi + pxz + pyi + pyz;
 	ppxx = pxx + pxy + pyx + pyy;
 
-	m = pe_max(ppix, ppxi, ppxx);
+	if (AVERAGE) {
+		m = pe_av(ppix, ppxi, ppxx);
+	}
+	else {
+		m = pe_max(ppix, ppxi, ppxx);
+	}
 	ps3x[2] = 15*ems[0]->scale*m/4;
 
 	ppiz = piz + piy + pxz + pxy;
 	ppzi = pzi + pzx + pyi + pyx;
 	ppzz = pzz + pzy + pyz + pyy;
 
-	m = pe_max(ppiz, ppzi, ppzz);
+	if (AVERAGE) {
+		m = pe_av(ppiz, ppzi, ppzz);
+	}
+	else {
+		m = pe_max(ppiz, ppzi, ppzz);
+	}
 	ps3z[2] = 15*ems[0]->scale*m/4;
 
 	ps3x[1] = ps3z[1] = 0;
@@ -645,7 +660,7 @@ void pe_print_stat(STAT *stat) {
 // Convert a code distance d and three error rates p[] of type X or Z
 // into a logical error rate inferred from the database stat_ll
 double pe_p_L_interpolate(int d, double *p, LL_NODE *stat_ll, int type) {
-	// int i;
+	int i;
 	double p0_, p1_, p2_;
 	double p0u, p0d, p1u, p1d, p2u, p2d, p0, p1, p2, del_p0, del_p1, del_p2;
 	double pddd, pddu, pdud, pduu, pudd, pudu, puud, puuu;
@@ -657,6 +672,13 @@ double pe_p_L_interpolate(int d, double *p, LL_NODE *stat_ll, int type) {
 	if (d < 3 || d > 6) {
 		fprintf(stderr, "Database only contains data for 3 <= d <= 6. Argument d = %d out of range.\n", d);
 		exit(EXIT_FAILURE);
+	}
+
+	for (i=0; i<3; i++) {
+		if (p[i] <= 0 || p[i] >= 0.5) {
+			fprintf(stderr, "p[%d] not in range [0, 0.5). Error model invalid.\n", i);
+			exit(EXIT_FAILURE);
+		}
 	}
 
 	// for (i=0; i<3; i++) printf("p[%d] = %g\n", i, p[i]);
@@ -898,4 +920,3 @@ double pe_p_L_estimate(int d, FORM *f, int type) {
 
 	return f->Az*pow(f->qz, de);
 }
-

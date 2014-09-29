@@ -35,6 +35,7 @@ void cdll_extract_node(CDLL_NODE *n);
 void cdll_print(CDLL_NODE *sent, void (*print_key)(void *));
 void cdll_reverse_print(CDLL_NODE *sent, void (*print_key)(void *));
 void cdll_free(CDLL_NODE *sent, void (*free_key)(void *));
+int cdll_length(CDLL_NODE *sent);
 
 /** @} */
 

@@ -25,7 +25,6 @@ else
 CXXFLAGS = -O3 -Wall -Wextra -lm $(INCDIRS)
 endif
 
-
 DIRS = src
 
 # Find all c and cpp files

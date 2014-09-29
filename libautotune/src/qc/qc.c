@@ -5,16 +5,75 @@
 #include "qc.h"
 #include "../memory/memory.h"
 #include "../random/random.h"
+#include "../fast_hash/fasthash.h"
+#include <sys/time.h>
+
+//#define DBG_MEAS_QUBIT 1
+//#define DBG_CREATE_SET 1
 
 /** The number of timesteps in each correction cycle */
 #define CYCLE_T 8
 
+#define RECIPE_ADV_OFFSET_HT_SIZE 1000117
+#define RECIPE_ADV_BLOCK_HT_SIZE 1000039
+#define RECIPE_ADV_DOT_HT_SIZE 1000081
+#define MERGE_LINES_HT_SIZE 1000099
+
+double t_start[TIMERS];
+double t_total[TIMERS];
+int t_counts[TIMERS];
+const char *t_name[TIMERS];
+
 /**
- * \brief Initialise the quantum computuation 
+ * \brief A crude timing class for determining areas of code using large
+ * amounts of time
+ * 
+ * This timer function is primarily usefull for finding code that becomes
+ * slower over time (rather than running in constant time). Profilers can find
+ * slow running functions, but narrowing it down to a specific call on a
+ * specific data structure that is slowing over time can be difficult.
  *
- * Initialises the quantum computer. Notable defaults include: 
- *  - perfect_gates set to FALSE
- *  - track set to TRUE
+ * \param[in] timer_num A number less than TIMERS that is the unique ID for a
+ * timer
+ * \param[in] action The action to start/stop/print the timers. 1 to start, 0
+ * to stop, anything else will print the timers.
+ * \param[in] name A string representing the name of this timer. Printed with
+ * the timers to make it easier to view which timers are which
+ */
+void timer(int timer_num, int action, const char *name) {
+	struct timeval t1970;
+	double time;
+	int i;
+	gettimeofday(&t1970, NULL);
+	time = (double)t1970.tv_sec + (double)t1970.tv_usec/1000000;
+	if (action == START) {
+		if (timer_num == 0) {
+			for (i = 0; i < TIMERS; i++) {
+				t_total[i] = 0;
+				t_counts[i] = 0;
+			}
+		}
+		t_counts[timer_num]++;
+		t_name[timer_num] = name;
+		t_start[timer_num] = time; 
+	}
+	else if (action == STOP) {
+		t_total[timer_num] += time - t_start[timer_num];
+		//printf("Timer %s Increment: %f\n", t_name[timer_num], time - t_start[timer_num]);
+	} 
+	else {
+		for (i = 0; i < TIMERS; i++) {
+			if (t_total[i] > 0 && t_counts[i] % 50 == 0) {
+				printf("Timer: %50s\t%d\t%10.10f\t(%0.2f%%)\n", t_name[i], t_counts[i], t_total[i], (t_total[i] / t_total[0])*100); 
+			}		
+		}
+	}
+}
+
+
+
+/**
+ * \brief Initialise the quantum computuation, with an original recipe 
  *
  * \param[in] s0 The first seed of the random number generator
  * \param[in] s1 The second seed of the random number generator
@@ -32,7 +91,54 @@ QC *qc_create_qc(int s0, int s1, int de_ht_size, int stick_ht_size, int t_delete
 	QC *qc;
 
 	qc = (QC *)my_malloc(sizeof(QC));
+	qc->recipe = recipe;
+	qc->recipe_adv = NULL;
+	qc_init_qc(qc, s0, s1, de_ht_size, stick_ht_size, t_delete);
 
+	return qc;
+}
+
+/**
+ * \brief Initialise the quantum computuation, with an advanced recipe
+ *
+ * \param[in] s0 The first seed of the random number generator
+ * \param[in] s1 The second seed of the random number generator
+ * \param[in] de_ht_size The size of the \ref de hash table
+ * \param[in] stick_ht_size The size of the \ref stick hash table
+ * \param[in] t_delete How many timesteps in the past to keep before deletion 
+ * \param[in] recipe The \ref recipe_adv for the quantum computation 
+ *
+ * \callgraph
+ * \callergraph
+ *
+ * \return An initialised quantum computer
+ */
+QC *qc_create_qc_adv(int s0, int s1, int de_ht_size, int stick_ht_size, int t_delete, RECIPE_ADV *recipe) {
+	QC *qc;
+
+	qc = (QC *)my_malloc(sizeof(QC));
+	qc->recipe = NULL;
+	qc->recipe_adv = recipe;
+	qc_init_qc(qc, s0, s1, de_ht_size, stick_ht_size, t_delete);
+
+	return qc;
+}
+
+/**
+ * \brief Sets the default for a \ref qc
+ * 
+ * Initialises the quantum computer. Notable defaults include: 
+ *  - perfect_gates set to FALSE
+ *  - track set to TRUE
+ *
+ * \param[in] s0 The first seed of the random number generator
+ * \param[in] s1 The second seed of the random number generator
+ * \param[in] de_ht_size The size of the \ref de hash table
+ * \param[in] stick_ht_size The size of the \ref stick hash table
+ * \param[in] t_delete How many timesteps in the past to keep before deletion 
+ * \param[in] recipe The \ref recipe_adv for the quantum computation 
+ */
+void qc_init_qc(QC *qc, int s0, int s1, int de_ht_size, int stick_ht_size, int t_delete) {
 	randoms(&s0, &s1);
 	//Init0(0);
 
@@ -44,6 +150,8 @@ QC *qc_create_qc(int s0, int s1, int de_ht_size, int stick_ht_size, int t_delete
 	qc->qubit_cdll = cdll_create();
 	qc->syn_heap = bh_create(0);
 	qc->set_heap = bh_create(0);
+	qc->finalized_balls = cdll_create();
+	qc->zombie_dots = cdll_create();
 	qc->num_ems = 0;
 	qc->ems = NULL;
 	qc->num_es = 0;
@@ -59,13 +167,121 @@ QC *qc_create_qc(int s0, int s1, int de_ht_size, int stick_ht_size, int t_delete
 	qc->nest_du = qc_create_nest(stick_ht_size);
 	qc->m_pr = m_create_matching(t_delete);
 	qc->m_du = m_create_matching(t_delete);
-	qc->recipe = recipe;
 	qc->perfect_gates = FALSE;
 	qc->track = TRUE;
 	qc->get_boundary = NULL;
 	qc->boundaries = NULL;
-	
-	return qc;
+	qc->logical_loss_err_pr = 0;
+	qc->last_logical_loss_err_pr = 0;
+	qc->logical_loss_err_du = 0;
+	qc->last_logical_loss_err_du = 0;
+
+}
+
+/**
+ * \brief Cleans up the dots and lines from any balls that exist in the nest
+ * but belong to sets that have yet to be finalized. This only occurs when
+ * using advanced recipes, because the dots and lines are created at the same
+ * time as the set, rather than when the set is finalized.
+ * 
+ * \param[in] nest The \ref nest to clear of uninserted dots and lines
+ */
+void qc_free_uninserted_dots_and_lines(NEST *nest) {
+	BALL *ball;
+	DOT *dot;
+	LL_NODE *ll, *ll_temp;
+	LINE *line;
+	CDLL_NODE *cdll;
+
+	cdll = nest->ball_cdll->next;
+	while (cdll != nest->ball_cdll) {
+		ball = (BALL *)cdll->key;
+
+		// If the ball has a value for big_t then its parent set is finalized
+		// which means the ball is either converted or in finalized_balls, and
+		// hence doesn't need to be cleaned up here.
+		if (ball->big_t != LONG_MAX) {
+			cdll = cdll->next;
+			continue;
+		}
+
+		ll = ball->dot->lines;
+		while (ll != NULL) {
+			line = (LINE *)ll->key;
+			ll_temp = ll->next;
+
+			// Delete the line from the linked list of the destination dot.
+			// This stops that dot from also trying to delete the line and
+			// reading freed memory.
+			dot = (line->a == ball->dot) ? line->b : line->a;
+			assert(dot->merge == NULL);
+			dot->lines = ll_delete_node(dot->lines, line);
+
+			// Free the line and the node in the linked list
+			free(ll);
+			free(line);
+
+			ll = ll_temp;
+		}
+
+		// Free the dot and clean up the ball's pointer
+		free(ball->dot);
+		ball->dot = NULL;
+
+		cdll = cdll->next;
+	}
+}
+
+/**
+ * \brief Cleans up the dots and lines from any finalized balls that have yet
+ * to be converted (have their dots and lines into the matching).
+ *
+ * Those confused will be reminded that first sets are finalized, which under
+ * advanced recipes puts the ball (which already exists) into the
+ * finalized_balls list. Then, after enough time has passed to consider the
+ * dots and lines finalized (no chance of being merged due to loss) they are
+ * themselves finalized and inserted into the matching. This function aims to
+ * free lines that exist in balls that have been finalized, but the ball has
+ * yet to be "converted", having its dots and lines inserted into matching.
+ * 
+ * \param[in] finalized_balls The finalized_balls \ref cdll_node from \ref qc
+ */
+void qc_free_unfinalized_dots_and_lines(CDLL_NODE *finalized_balls) {
+	BALL *ball;
+	DOT *dot;
+	LL_NODE *ll, *ll_temp;
+	LINE *line;
+	CDLL_NODE *cdll;
+
+	cdll = finalized_balls->next;
+	while (cdll != finalized_balls) {
+		ball = (BALL *)cdll->key;
+		ll = ball->dot->lines;
+
+		while (ll != NULL) {
+			line = (LINE *)ll->key;
+			ll_temp = ll->next;
+
+			// Delete the line from the linked list of the destination dot.
+			// This stops that dot from also trying to delete the line and
+			// reading freed memory.
+			dot = (line->a == ball->dot) ? line->b : line->a;
+			assert(dot->merge == NULL);
+			dot->lines = ll_delete_node(dot->lines, line);
+
+			// Free the line and the node in the linked list
+			free(ll);
+			free(line);
+
+			ll = ll_temp;
+		}
+
+		// Free the dot and clean up the ball's pointer
+		free(ball->dot);
+		ball->dot = NULL;
+
+		cdll = cdll->next;
+	}
 }
 
 /**
@@ -80,6 +296,8 @@ void qc_free_qc(QC *qc) {
 	/*
 	 * \remark Syndrome qubits are owned by the user, and are not freed here.
 	 */
+	CDLL_NODE *n;
+	ERROR *e;
 
 	int i;
 	// Free the qubits
@@ -89,8 +307,35 @@ void qc_free_qc(QC *qc) {
 	// keys in the syndrome heap. 
 	bh_free(qc->syn_heap, NULL); 
    
+	// When using advanced recipes, balls, dots and lines are created when the
+	// sets are created. As a result, the computation will end with balls at
+	// the time boundary that are unfinalized and hence the dots and lines have
+	// never been inserted into the matching. This loops over the nest and
+	// cleans up and dots and lines in unconverted balls. This is slow, however
+	// given qc_free_qc is called at the end of time, this is not an issue.
+	// 
+	// There are also balls that have been finalized, but are not sufficiently
+	// far back in the past for their dots and lines to be finalized. That is,
+	// there is still a chance for them to be merged together due to loss.
+	// Hence, at the end of time, finalized balls near the current time will be
+	// unconverted and their dots/lines will need to be cleaned up also.
+	if (qc->recipe_adv != NULL) {
+		qc_free_uninserted_dots_and_lines(qc->nest_pr);
+		qc_free_uninserted_dots_and_lines(qc->nest_du);
+		qc_free_unfinalized_dots_and_lines(qc->finalized_balls);
+	}
+
 	// Free the set heap
 	bh_free(qc->set_heap, qc_free_void_set);
+
+	// Free the cdll structure containing the finalized_balls, this will simply
+	// be the head node when advanced recipes aren't being used.
+	cdll_free(qc->finalized_balls, NULL);
+
+	// Free the cdll structure and any zombie dots. These are dots that have
+	// been merged into another dot but need to exist for the sake of
+	// dot->merge.
+	cdll_free(qc->zombie_dots, m_free_void_dot);
 
 	// Free the error models
 	for (i = 0; i < qc->num_ems; i++) {
@@ -98,7 +343,16 @@ void qc_free_qc(QC *qc) {
 	}
 	free(qc->ems);
 
-	// Free the error cdlls
+	// Free the error cdll nodes in the qc. This is not nessecarily
+	// required, but it means that we can assert all errors are properly
+	// removed from the simulation before being deleted.
+	n = qc->error_cdll->next;
+	while (n != qc->error_cdll) {
+		e = (ERROR *)n->key;
+		e->qc_cdlln = NULL;
+		n = n->next;
+	}
+
 	cdll_free(qc->error_cdll, qc_free_void_error);
 	cdll_free(qc->nest_error_cdll, qc_free_void_error);
 
@@ -142,6 +396,8 @@ void qc_free_qc_copy(QC *qc) {
 
 	// Free the set heap
 	bh_free(qc->set_heap, qc_free_void_set);
+	cdll_free(qc->finalized_balls, NULL);
+	cdll_free(qc->zombie_dots, NULL);
 
 	// Free the error cdlls
 	cdll_free(qc->error_cdll, qc_free_void_error);
@@ -161,7 +417,13 @@ void qc_free_qc_copy(QC *qc) {
 		my_2d_free(qc->recipe->n, (void **)qc->recipe->dotarr2);
 		free(qc->recipe);
 	}
-	
+
+	if (qc->recipe_adv) {
+		my_2d_free(qc->recipe_adv->n, (void **)qc->recipe_adv->block_arr);
+		my_2d_free(qc->recipe_adv->n, (void **)qc->recipe_adv->t_arr);
+		free(qc->recipe_adv);
+	}
+
 	free(qc);
 
 	// Restore the random number generator to before the copy was made
@@ -194,16 +456,34 @@ void qc_increment_big_t(QC *qc) {
  */
 void qc_mwpm(QC *qc, int undo) {
 	int d;
-	d = (qc->recipe->m + 1) / 2;
+
+	if (qc->recipe) {
+		d = (qc->recipe->m + 1) / 2;
+	} else if (qc->recipe_adv) {
+		d = (qc->recipe_adv->m + 1) / 2;
+	}
 
 	// Match the primal matching
 	qc->m_pr->t = qc->big_t;
-	qc->m_pr->D = d * qc->recipe->min_horz_wt_pr;
-	m_mwpm(qc->m_pr, undo);
+	qc->m_du->t = qc->big_t;
+
+	if (qc->recipe) {
+		qc->m_pr->D = d * qc->recipe->min_horz_wt_pr;
+		qc->m_du->D = d * qc->recipe->min_horz_wt_du;
+	} else if (qc->recipe_adv) {
+		qc->m_pr->D = d * qc->recipe_adv->min_horz_wt_pr;
+		qc->m_du->D = d * qc->recipe_adv->min_horz_wt_du;
+	} else {
+		qc->m_pr->D = 3 * 30000; 
+		qc->m_du->D = 3 * 30000; 
+	}
 
 	// Match the dual matching
-	qc->m_du->t = qc->big_t;
-	qc->m_du->D = d * qc->recipe->min_horz_wt_du;
+	//printf("M_PR\n");
+	m_update_dots_and_lines_into_bfs(qc->m_pr, qc->m_pr->g, undo);
+	m_mwpm(qc->m_pr, undo);
+	//printf("M_DU\n");
+	m_update_dots_and_lines_into_bfs(qc->m_du, qc->m_du->g, undo);
 	m_mwpm(qc->m_du, undo);
 }
 
@@ -244,7 +524,6 @@ QC *qc_copy_qc(QC *qc) {
 	qc2->set_heap = bh_copy(qc->set_heap, qc_copy_void_set, NULL);
 	qc2->num_ems = qc->num_ems;
 
-	// The error models do not change during correction, hence we do not deep
 	// copy them. This also means they are not freed when this copy is.
 	qc2->ems = qc->ems; 
 	
@@ -259,6 +538,10 @@ QC *qc_copy_qc(QC *qc) {
 	qc2->de_cdll = cdll_copy(qc->de_cdll, qc_copy_void_de, qc_de_set_qc_cdlln);
 	qc2->nest_pr = qc_copy_nest(qc->nest_pr);
 	qc2->nest_du = qc_copy_nest(qc->nest_du);
+
+	//cdll_print(qc->finalized_balls, qc_print_void_ball);
+	qc2->finalized_balls = cdll_copy(qc->finalized_balls, qc_copy_null_ball, NULL);
+	qc2->zombie_dots = cdll_copy(qc->zombie_dots, qc_copy_null_dot, NULL);
 
 	// The matchings are undone at the end of correct rather than deleted, as
 	// such we do not deep copy them here. This also means they are not freed
@@ -288,11 +571,44 @@ QC *qc_copy_qc(QC *qc) {
 	} else {
 		qc2->recipe = NULL;
 	}
+
+	if (qc->recipe_adv) {
+		qc2->recipe_adv = qc_create_recipe_adv(qc->recipe_adv->type, qc->recipe_adv->n, qc->recipe_adv->m, TRUE);
+
+		for (i = 0; i < qc->recipe_adv->n; ++i) {
+			for (j = 0; j < qc->recipe_adv->m; ++j) {
+				qc2->recipe_adv->block_arr[i][j] = qc->recipe_adv->block_arr[i][j];
+				qc2->recipe_adv->t_arr[i][j] = qc->recipe_adv->t_arr[i][j];
+			}
+		}
+
+		qc2->recipe_adv->min_horz_wt_pr = qc->recipe_adv->min_horz_wt_pr;	
+		qc2->recipe_adv->min_horz_wt_du = qc->recipe_adv->min_horz_wt_du;	
+
+		qc2->recipe_adv->in_cycle = qc->recipe_adv->in_cycle;
+		qc2->recipe_adv->cycle_t0 = qc->recipe_adv->cycle_t0;
+		qc2->recipe_adv->cycle_period = qc->recipe_adv->cycle_period;
+
+		qc2->recipe_adv->block_ht = qc->recipe_adv->block_ht;
+		qc2->recipe_adv->offset_ht = qc->recipe_adv->offset_ht;
+		qc2->recipe_adv->block_cdll = qc->recipe_adv->block_cdll;
+
+		qc2->recipe_adv->cycle_len = qc->recipe_adv->cycle_len;
+		qc2->recipe_adv->cycle_begin = qc->recipe_adv->cycle_begin;
+		qc2->recipe_adv->cycle_end = qc->recipe_adv->cycle_end;
+	} else {
+		qc2->recipe_adv = NULL;
+	}
 	
 	qc2->perfect_gates = qc->perfect_gates;
 	qc2->track = qc->track;
 	qc2->get_boundary = qc->get_boundary;
 	qc2->boundaries = qc->boundaries;
+
+	qc2->logical_loss_err_pr = qc->logical_loss_err_pr;
+	qc2->last_logical_loss_err_pr = qc->last_logical_loss_err_pr;
+	qc2->logical_loss_err_du = qc->logical_loss_err_du;
+	qc2->last_logical_loss_err_du = qc->last_logical_loss_err_du;
 
 	return qc2;
 }
@@ -325,6 +641,10 @@ QUBIT *qc_copy_qubit(QUBIT *q) {
 
 	// Point the original's copy to the newly created copy qubit
 	q->copy = q2;
+
+	q2->i = q->i;
+	q2->j = q->j;
+	q2->k = q->k;
 
 	q2->t = q->t;
 	q2->e = q->e;
@@ -399,6 +719,12 @@ ERROR *qc_copy_error(ERROR *error) {
 	error2->type = error->type;
 	error2->op = error->op;
 	error2->p = error->p;
+
+	error2->gate = error->gate;
+	error2->i = error->i;
+	error2->j = error->j;
+	error2->k = error->k;
+	error2->t = error->t;
 
 	error2->qc_cdlln = NULL;
 	error2->q_cdlln = NULL;
@@ -525,14 +851,31 @@ BALL *qc_copy_ball(BALL *ball) {
 	ball2->type = ball->type;
 	ball2->i = ball->i;
 	ball2->j = ball->j;
+	ball2->t = ball->t;
 	ball2->big_t = ball->big_t;
 	ball2->stick_ht = ht_copy(ball->stick_ht, qc_copy_void_stick);
 	ball2->mp = ball->mp;
+	ball2->hash_ijt = ball->hash_ijt;
 
 	ball2->dot = ball->dot; 
 	ball2->copy = ball;
 
 	return ball2;
+}
+
+void *qc_copy_null_ball(void *key) {
+	BALL *ball;
+
+	ball = (BALL *)key;
+	if (ball->copy == NULL) {
+		printf("Attempting to use copy of ball that doesn't exist.\n");
+		exit(1);
+	}
+	return (void *)ball->copy;
+}
+
+void *qc_copy_null_dot(void *key) {
+	return key;
 }
 
 /**
@@ -582,6 +925,9 @@ SYNDROME *qc_copy_syndrome(SYNDROME *syn) {
 	syn2->qc_heap_i = syn->qc_heap_i;
 	syn2->copy = syn;
 
+	syn2->set = NULL;
+	syn2->set_cdlln = NULL;
+
 	return syn2;
 }
 
@@ -627,9 +973,12 @@ SET *qc_copy_set(SET *set) {
 	set2 = (SET *)my_malloc(sizeof(SET));
 	set->copy = set2;
 
+	set2->set_pos_cdll = cdll_copy(set->set_pos_cdll, qc_copy_void_set_pos, NULL);
+
 	set2->type = set->type;
 	set2->i = set->i;
 	set2->j = set->j;
+	set2->t = set->t;
 	set2->big_t = set->big_t;
 	set2->qc_heap_i = set->qc_heap_i;
 	set2->num_meas_left = set->num_meas_left;
@@ -638,6 +987,7 @@ SET *qc_copy_set(SET *set) {
 	set2->num_errors = set->num_errors;
 	set2->mt_cdll = cdll_copy(set->mt_cdll, qc_copy_void_measurement, NULL);
 	set2->ball = qc_copy_ball(set->ball);
+	set2->block = set->block;
 	set2->copy = set;
 
 	return set2;
@@ -736,6 +1086,21 @@ void *qc_copy_void_measurement(void *key) {
 	return (void *)qc_copy_measurement((MEASUREMENT *)key);
 }
 
+SET_POS *qc_copy_set_pos(SET_POS *sp) {
+	SET_POS *sp2;
+
+	sp2 = (SET_POS *)my_malloc(sizeof(SET_POS));
+	sp2->i = sp->i;
+	sp2->j = sp->j;
+	sp2->lay = sp->lay;
+
+	return sp2;
+}
+
+void *qc_copy_void_set_pos(void *key) {
+	return (void *)qc_copy_set_pos((SET_POS *)key);
+}
+
 /**
  * \ingroup de
  * \brief Copies a detection event 
@@ -820,8 +1185,10 @@ NEST *qc_copy_nest(NEST *nest) {
 	// been set during the copying of the ball_cdlln.
 	else {
 		ball = (BALL *)nest->last_converted_ball_cdlln->key;
-		assert(ball->copy != NULL);
-		nest2->last_converted_ball_cdlln = ball->copy->nest_cdlln;
+		if (ball) {
+			assert(ball->copy != NULL);
+			nest2->last_converted_ball_cdlln = ball->copy->nest_cdlln;
+		}
 	}
 
 	// The logic here works the same as above.
@@ -901,6 +1268,20 @@ void qc_free_qubit(QUBIT *q) {
 	/**
 	 * \remark The errors in the qubit are owned by qc, and are hence not freed by this function. 
 	 */
+	CDLL_NODE *n;
+	ERROR *e;
+
+	// The errors are not being freed, but this qubit is. Ensure that no errors
+	// still point back to the qubit being deleted. They should become
+	// unaccessible without this qubit until freed from the list of errors,
+	// however this allows us to assert that errors have been cleaned up
+	// properly before being freed.
+	n = q->error_cdll->next;
+	while (n != q->error_cdll) {
+		e = (ERROR *)n->key;
+		e->q_cdlln = NULL;
+		n = n->next;
+	}
 
 	cdll_free(q->error_cdll, NULL);
 	ht_free(q->error_ht, NULL);
@@ -1082,7 +1463,7 @@ void qc_single_qubit_unitary(QC *qc, QUBIT *q, int gate, double p,
 	transform_e(q);
 	qc_random_raw_e(qc, q, em, p, multiply_es);
 
-	// Track all pissble single-qubit errors
+	// Track all possible single-qubit errors
 	if (qc->track) {
 		n = q->error_cdll->next;
 		while (n != q->error_cdll) {
@@ -1275,6 +1656,25 @@ int qc_meas_qubit(QC *qc, QUBIT *q, int gate, int basis, double p,
 	CDLL_NODE *n, *tn;
 	ERROR *error;
 
+	#ifdef DBG_MEAS_QUBIT 
+	printf("qc_meas_qubit()\n");
+	qc_print_set(set1);
+	qc_print_set(set2);
+	#endif
+
+	if (set1->big_t != LONG_MAX || set2->big_t != LONG_MAX) {
+		qc_print_set(set1);
+		qc_print_set(set2);
+		assert(set1->big_t == LONG_MAX && set2->big_t == LONG_MAX);
+	}
+
+	// When using advanced recipes, sets have their dots and balls created
+	// immediately, so they already have a t and big_t set at time of creation
+	if (!qc->recipe_adv) {
+		assert(set1->big_t == LONG_MAX);
+		assert(set2->big_t == LONG_MAX);
+	}
+
 	assert(gate >= 0);
 	if (qc->track) {
 		assert(q->num_errors == q->error_ht->num_elem);
@@ -1297,15 +1697,15 @@ int qc_meas_qubit(QC *qc, QUBIT *q, int gate, int basis, double p,
 	}
 
 	// Update how many measurements are required to complete a set
-	set1->num_meas_left--;
-	set2->num_meas_left--;
-
-	// This fork is not currently used, it will be used once qubit loss is
-	// finished being implemented. If a qubit measurement returns 0 indicating
-	// the qubit is lost, then the two sets will be merged and the measurement
-	// shared.	
+	if (!qc_is_boundary_set(set1)) {
+		set1->num_meas_left--;
+	}
+	if (!qc_is_boundary_set(set2)) {
+		set2->num_meas_left--;
+	}	
+	
+	// The qubit measured has been lost
 	if (m == 0) {
-
 		// Delete all errors from the qubit
 		if (qc->track) {
 			n = q->error_cdll->next;
@@ -1320,12 +1720,19 @@ int qc_meas_qubit(QC *qc, QUBIT *q, int gate, int basis, double p,
 			assert(n->prev == n);
 		}
 
-		// Merge the sets, finalize if possible
-		set = qc_merge_sets(qc, set1, set2);
-		if (set->num_meas_left == 0) {
-			qc_finalize_set(qc, set, q->t);
+		// If we are attempting to merge a set to itself, do nothing.
+		if (set1 != set2) {
+			set = qc_merge_sets(qc, set1, set2);
+
+			// The set will be NULL if a logical loss error has occured
+			// resulting in no merge operation.
+			if (set != NULL && set->num_meas_left == 0) {
+				qc_finalize_set(qc, set, q->t);
+			}
 		}
 	}
+
+	// The qubit measured has a valid measurement result
 	else {
 		// If there are any errors on the qubit, we want to associate them with
 		// the measurement rather than the qubit. 
@@ -1377,11 +1784,16 @@ int qc_meas_qubit(QC *qc, QUBIT *q, int gate, int basis, double p,
 		}
 
 		// Insert measurement into the sets (if not a boundary)
-		if (set1->type != PRIMAL_BOUNDARY && set1->type != DUAL_BOUNDARY) {
-			qc_insert_measurement(set1, mt);
-		}
-		if (set2->type != PRIMAL_BOUNDARY && set2->type != DUAL_BOUNDARY) {
-			qc_insert_measurement(set2, mt);
+		// 
+		// If the sets are the same, then this measurement is interior to an
+		// agglomerated set, and hence should not be considered.
+		if (set1 != set2) {
+			if (!qc_is_boundary_set(set1)) {
+				qc_insert_measurement(set1, mt);
+			}
+			if (!qc_is_boundary_set(set2)) {
+				qc_insert_measurement(set2, mt);
+			}
 		}
 
 		// If the measurement hasn't been inserted into any sets (i.e if it joined two boundary sets), 
@@ -1391,10 +1803,10 @@ int qc_meas_qubit(QC *qc, QUBIT *q, int gate, int basis, double p,
 		}
 
 		// Finalize the sets if appropriate
-		if (set1->num_meas_left == 0) {
+		if (!qc_is_boundary_set(set1) && set1->num_meas_left == 0) {
 			qc_finalize_set(qc, set1, q->t);
 		}
-		if (set2->num_meas_left == 0) {
+		if (set1 != set2 && !qc_is_boundary_set(set2) && set2->num_meas_left == 0) {
 			qc_finalize_set(qc, set2, q->t);
 		}
 	}
@@ -1572,6 +1984,7 @@ void qc_random_raw_e(QC *qc, QUBIT *q, ERROR_MODEL *em, double p,
 		// error, such that em->sum_raw_rel_p[len-1] equals 1. This ensures
 		// that at least one of the errors will be applied.
 		if (u < p * em->sum_raw_rel_p[i]) {
+			//printf("**RNDERR** i: %d, j: %d, k: %d, t: %ld:%ld, op: %ld\n", q->i, q->j, q->k, q->t/CYCLE_T, q->t%CYCLE_T, em->raw_em[i][1]);
 			q->e = multiply_es(q->e, em->raw_em[i][1]);
 		//	printf("i: %d, j: %d, k: %d, t: %ld:%ld, op: %ld\n", q->i, q->j, q->k, q->t/CYCLE_T, q->t%CYCLE_T, em->raw_em[i][1]);
 			return;
@@ -1615,6 +2028,7 @@ void qc_random_raw_e2(QC *qc, QUBIT *q1, QUBIT *q2, ERROR_MODEL *em, double p,
 	qc->num_es++;
 	for (i = 0; i < em->num_lines; i++) {
 		if (u < p * em->sum_raw_rel_p[i]) {
+			//printf("**RNDERR2** i1: %d, j1: %d, k1: %d, i2, %d, j2: %d, k2: %d, t: %ld:%ld, op1: %ld, op2: %ld\n", q1->i, q1->j, q1->k, q2->i, q2->j, q2->k, q1->t/CYCLE_T, q1->t%CYCLE_T, em->raw_em[i][1], em->raw_em[i][2]);
 			q1->e = multiply_es(q1->e, em->raw_em[i][1]);
 			q2->e = multiply_es(q2->e, em->raw_em[i][2]);
 		//	printf("i1: %d, j1: %d, k1: %d, i2, %d, j2: %d, k2: %d, t: %ld:%ld, op1: %ld, op2: %ld\n", q1->i, q1->j, q1->k, q2->i, q2->j, q2->k, q1->t/CYCLE_T, q1->t%CYCLE_T, em->raw_em[i][1], em->raw_em[i][2]);
@@ -1669,7 +2083,7 @@ void qc_add_errors(QC *qc, QUBIT *q, int gate, double p) {
 
 			// Assert that the error is an X, Y or Z Pauli error
 			assert(e != I);
-			assert(e == X || e == Y || e == Z);
+			assert(e == X || e == Y || e == Z || e == L);
 
 			error = qc_create_error(q->i, q->j, q->k, q->t, qc->big_t, qc->next_label, e, gate, p_e);
 			qc_insert_error(qc, q, error, &sentinel);
@@ -1817,6 +2231,18 @@ ERROR *qc_create_error(int i, int j, int k, long int t, long int big_t, int labe
  * \sa qc_free_void_error
  */
 void qc_free_error(ERROR *error) {
+	// Ensure that the error has been entirely cleaned up before being freed.
+	// We do not want any links to this error left in qc or any qubits after it
+	// is freed.
+	if (error->qc_cdlln != NULL) {
+		qc_print_error(error);
+		assert(error->qc_cdlln == NULL);
+	}
+	if (error->q_cdlln != NULL) {
+		qc_print_error(error);
+		assert(error->q_cdlln == NULL);
+	}
+
 	// If there is a copy of this error, nullify the pointer from that copy to
 	// this error
 	if (error->copy != NULL) { 
@@ -1984,12 +2410,16 @@ void qc_delete_error(QC *qc, ERROR *error) {
 	cdll_delete_node(error->qc_cdlln, NULL);
 	qc->num_errors--;
 
+	error->qc_cdlln = NULL;
+
 	// Delete the error from the qubit
 	assert(error->q_cdlln);
 	cdll_delete_node(error->q_cdlln, NULL);
 	ht_delete_key(error->q->error_ht, error->label, error, NULL);
 	error->q->num_errors--;
-	
+
+	error->q_cdlln = NULL;
+
 	// Free the error
 	qc_free_error(error);
 }
@@ -2241,6 +2671,7 @@ void qc_finalize_de(QC *qc, DE *de) {
 
 	// Track the error in the stick
 	stick->error_ll = ll_insert(stick->error_ll, de->error);
+	de->error->stick = stick;
 	stick->num_errors++;
 }
 
@@ -2448,10 +2879,13 @@ SET *qc_create_set(int type, int i, int j, int num_meas_left, SET *bdy) {
 
 	set = (SET *)my_malloc(sizeof(SET));
 
+	set->set_pos_cdll = cdll_create();
+
 	set->type = type;
 	set->i = i;
 	set->j = j;
 	set->big_t = LONG_MAX;
+	set->t = LONG_MAX;
 	set->qc_heap_i = 0;
 	set->num_meas_left = num_meas_left;
 	set->bdy = bdy;
@@ -2460,14 +2894,117 @@ SET *qc_create_set(int type, int i, int j, int num_meas_left, SET *bdy) {
 	set->mt_cdll = cdll_create();
 	if (type == PRIMAL_BOUNDARY || type == DUAL_BOUNDARY) {
 		set->ball = qc_create_ball(set, 0);
-		set->ball->mp = -1;
+		set->ball->mp = 1;
 	}
 	else {
 		set->ball = NULL;
 	}
 	set->copy = NULL;
+	set->block = NULL;
+
+	#ifdef DBG_CREATE_SET
+	printf("Create Set: ");
+	qc_print_set(set);
+	#endif
 
 	return set;
+}
+
+SET *qc_create_set_adv(QC *qc, int type, int i, int j, int num_meas_left, SET *bdy) {
+	/**
+	 * \remark If type is a boundary, a \ref ball will also be created and linked to the \ref set.
+	 */
+	SET *set;
+	BLOCK *block;
+	NEST *nest;
+	MATCHING *matching;
+	//DOT *dot;
+
+	set = (SET *)my_malloc(sizeof(SET));
+
+	set->type = type;
+	set->i = i;
+	set->j = j;
+	set->big_t = LONG_MAX;
+	set->t = LONG_MAX;
+	set->qc_heap_i = 0;
+	set->num_meas_left = num_meas_left;
+	set->bdy = bdy;
+	set->block = NULL;
+	set->set_pos_cdll = cdll_create();
+	set->syn_cdll = cdll_create();
+	set->num_errors = 0;
+	set->mt_cdll = cdll_create();
+	set->ball = NULL;
+
+	if (type == PRIMAL_BOUNDARY || type == DUAL_BOUNDARY) {
+		set->ball = qc_create_ball(set, 0);
+		set->ball->mp = 1;
+	}
+	else {
+		if (qc->recipe_adv && qc->recipe_adv->cycle_len > 0) {
+			//qc_print_set(set);
+			set->block = qc_get_block_for_set(qc, set);
+
+			block = (BLOCK *)qc->recipe_adv->block_arr[set->i][set->j]->prev->key;
+
+			if (set->block->t > qc->recipe_adv->t_arr[set->i][set->j]) {
+				qc->recipe_adv->t_arr[set->i][set->j] = set->block->t;
+			} else {
+				qc->recipe_adv->t_arr[set->i][set->j] += set->block->t - block->t;
+			}
+
+			//qc_print_block(set->block);
+			set->t = qc->recipe_adv->t_arr[set->i][set->j];
+			//printf("--%d %d %ld\n", set->i, set->j, set->t);
+			set->ball = qc_create_ball_adv(set, STICK_HT_SIZE);
+			//qc_print_ball(set->ball);
+
+			matching = (set->type == PRIMAL) ? qc->m_pr : qc->m_du;
+			nest = (set->type == PRIMAL) ? qc->nest_pr : qc->nest_du;
+
+			qc_insert_ball(nest, set->ball);
+			qc_convert_block_to_dot_and_lines(qc, matching, set->ball, set->block);
+			//m_print_dot(set->ball->dot);
+
+			//dot = m_create_and_insert_dot(matching, set->ball);
+		}
+	}
+	set->copy = NULL;
+
+	#ifdef DBG_CREATE_SET
+	printf("Create Set: ");
+	qc_print_set(set);
+	#endif
+
+	return set;
+}
+
+SET_POS *qc_create_set_pos(int i, int j, int lay) {
+	SET_POS *set_pos;
+	
+	set_pos = (SET_POS *)my_malloc(sizeof(SET_POS));
+	set_pos->i = i;
+	set_pos->j = j;
+	set_pos->lay = lay;
+
+	return set_pos;
+}
+
+void qc_swap_set_layer(SET *set, int lay) {
+	CDLL_NODE *n;
+	SET_POS *sp;
+
+	n = set->set_pos_cdll->next;
+	while (n != set->set_pos_cdll) {
+		sp = (SET_POS *)n->key;
+		n = n->next;
+		if (sp->lay != lay) {
+			sp->lay = !sp->lay;
+		} else {
+			//cdll_delete_node(n->prev, free);
+		}
+	}
 }
 
 /**
@@ -2488,33 +3025,46 @@ void qc_free_set(SET *set) {
 	CDLL_NODE *n, *tn;
 	MEASUREMENT *mt;
 
-	cdll_free(set->syn_cdll, NULL);
-
-	// Free the measurements in the set
-	n = set->mt_cdll->next;
-	while (n != set->mt_cdll) {
-		tn = n;
-		n = n->next;
-		mt = (MEASUREMENT *)tn->key;
-		free(tn);
-
-		// If the measurement belongs in multiple sets, then decrement the
-		// counter
-		if (mt->num_parent_sets > 1) {
-			mt->num_parent_sets--;
-		}
-
-		// If this is the last set the measurement is in, then free the
-		// measurement.
-		else {
-			qc_free_measurement(mt);
-		}
+	// At the moment we do not want to accidentally delete boundary sets. To
+	// ensure this, boundaries cannot be deleted with free_set and must be
+	// manually freed using qc_free_bdy. Once loss development is over, these
+	// functions could be remerged somewhat safely to ensure backwards
+	// compatibility with the previous qc library.
+	if (qc_is_boundary_set(set)) {
+		printf("Trying to free a boundary before the end of execution.\n");
+		assert(!qc_is_boundary_set(set));	
 	}
-	free(set->mt_cdll);
+	
+	if (set->syn_cdll != NULL) {
+		cdll_free(set->syn_cdll, NULL);
+	}
 
-	// If the set is a boundary, free the created ball
-	if (set->type == PRIMAL_BOUNDARY || set->type == DUAL_BOUNDARY) {
-		qc_free_ball(set->ball);
+	if (set->mt_cdll != NULL) {
+		// Free the measurements in the set
+		n = set->mt_cdll->next;
+		while (n != set->mt_cdll) {
+			tn = n;
+			n = n->next;
+			mt = (MEASUREMENT *)tn->key;
+			free(tn);
+
+			// If the measurement belongs in multiple sets, then decrement the
+			// counter
+			if (mt->num_parent_sets > 1) {
+				mt->num_parent_sets--;
+			}
+
+			// If this is the last set the measurement is in, then free the
+			// measurement.
+			else {
+				qc_free_measurement(mt);
+			}
+		}
+		free(set->mt_cdll);
+	}
+
+	if (set->set_pos_cdll != NULL) {
+		cdll_free(set->set_pos_cdll, free);
 	}
 
 	// If there is a copy of this set, nullify the pointer from the copy to
@@ -2522,6 +3072,29 @@ void qc_free_set(SET *set) {
 	if (set->copy != NULL) {
 		set->copy->copy = NULL;
 	}
+
+	free(set);
+}
+
+/**
+ * \brief Frees a boundary \ref set
+ * 
+ * Will free a boundary set. Seperated from qc_free_set as to avoid accidental
+ * deletion of boundary sets.
+ *
+ * \param[in] set The boundary \ref set to be freed.
+ */
+void qc_free_bdy(SET *set) {
+	if (set->syn_cdll != NULL) {
+		cdll_free(set->syn_cdll, NULL);
+	}
+	if (set->ball != NULL) {
+		qc_free_ball(set->ball);
+	}
+	if (set->set_pos_cdll != NULL) {
+		cdll_free(set->set_pos_cdll, free);
+	}
+	free(set->mt_cdll);
 	free(set);
 }
 
@@ -2607,6 +3180,412 @@ void qc_set_set_qc_heap_i(void *key, int i) {
 }
 
 /**
+ * \brief Returns where a \ref set is a boundary or not
+ * 
+ * \param[in] set The \ref set to test
+ *
+ * \return 1 if the set is a boundary, 0 otherwise.
+ */
+int qc_is_boundary_set(SET *set) {
+	return (set->type == PRIMAL_BOUNDARY || set->type == DUAL_BOUNDARY);
+}
+
+/**
+ * \brief Merges two dots when neither of them are the boundary
+ * 
+ * \param[in] m The \ref matching to store the undo steps in
+ * \param[in] dot1 The \ref dot being kept after the merge
+ * \param[in] dot2 The \ref dot being removed after the merge
+ * \param[in] lln_save The \ref ll_node of all the lines coming from dot2
+ * before the merge 
+ */
+void qc_merge_dots_without_boundary(MATCHING *m, DOT *dot1, DOT *dot2, LL_NODE *lln_save) {
+	LL_NODE *lln, *kept_lines; 
+	DLL_NODE *dlln;
+	LINE *line, *line2;
+	DOT *d1, *d2, *dot_keep;
+	HT *line_ht;
+	int hash, found;
+	double p_new;
+
+	kept_lines = ll_create();
+	line_ht = ht_create(MERGE_LINES_HT_SIZE);
+
+	// Loop over all the lines from the dot we are keeping and remove
+	// any internal lines (lines that go from this dot to itself now
+	// that the other dot is gone). 
+
+	lln = dot1->lines;
+	while (lln != NULL) {
+		line = (LINE *)lln->key;	
+		d1 = line->a;
+		d2 = line->b;
+
+		// If either dot at the end of the lines is a merged dot, it
+		// wont have any lines, so recurse down the mergings until we
+		// get to the dot containing the relevant lines
+		while (d1->merge != NULL) {
+			d1 = d1->merge;
+		}
+		while (d2->merge != NULL) {
+			d2 = d2->merge;
+		}
+
+		// Since we have just merged two sets, at minimum, the line
+		// connecting the two sets will now appear to be a line to
+		// itself as traversing down the dot from the removed set will
+		// result in the dot that was kept. 
+		// 
+		// If the line is between itself, it is internal, so we
+		// do not want to keep the line. Create an UNDO so we can get
+		// the line back later, and then continue.
+		if (d1 == d2) {
+			if (m->undo_flag == TRUE) {
+				m_create_line_undo(m, UNDO_LINE_MOVE, line, dot1, NULL, 0, 0);
+			} 
+			lln = lln->next;
+			continue;
+		}
+
+		// We want to hash the line based on its destination, this lets
+		// us easily determine which lines we already have later.
+		if (d1 == dot1) {
+			hash = qc_hash_ijt(d2->i, d2->j, d2->little_t);
+		} else {
+			hash = qc_hash_ijt(d1->i, d1->j, d1->little_t);
+		}
+		ht_insert_key(line_ht, hash, line);
+
+		kept_lines = ll_insert(kept_lines, line);
+		lln = lln->next;
+	}
+
+	// Loop over all the lines in the dot that is being removed.
+	// Each line is checked to see if its destination is already in the
+	// hash. If so, this means both dot1 and dot2 are connected share a
+	// destination. In this instance, the two lines are merged
+	// together. If the destination is new, then it is simply inserted.
+	
+	lln = lln_save; 
+	while (lln != NULL) {
+		line = (LINE *)lln->key;	
+		d1 = line->a;
+		d2 = line->b;
+
+		// This line is between the dot (dot2) we are removing and
+		// another dot which we are going to keep. This dot can also be
+		// thought of as the "destination" of the line.
+		dot_keep = (d1 == dot2) ? d2 : d1;
+
+		// Hash the line based on the location of the destination 
+		assert(dot_keep->merge == NULL);
+		hash = qc_hash_ijt(dot_keep->i, dot_keep->j, dot_keep->little_t);
+
+		// Search the hash table created when looping over the lines in
+		// dot1 and look to see if there is already line to the destination 
+		found = FALSE;
+		dlln = ht_hash_lookup(line_ht, hash); 
+
+		while (dlln != NULL) {
+			line2 = (LINE *)dlln->key;
+			if (line2->a == line->a || line2->b == line->b) {
+				found = TRUE;
+				break;
+			}
+			dlln = dlln->next;
+		}
+
+		// dot_keep is already completely merged, but the dX corresponding 
+		// to dot2 isn't currently merged. So traverse on down!
+		while (d1->merge != NULL) {
+			d1 = d1->merge;
+		}
+		while (d2->merge != NULL) {
+			d2 = d2->merge;
+		}
+
+		// If the line is internal, then flag it as moved to no where
+		// and continue looking at more lines 
+		if (d1 == d2) {
+			if (m->undo_flag == TRUE) {
+				m_create_line_undo(m, UNDO_LINE_MOVE, line, dot2, NULL, 0, 0);
+			} else {
+				free(line);
+			}
+			lln = lln->next;
+			continue;
+		}
+
+		d1 = line->a;
+		d2 = line->b;
+
+		// If the line already exists in the hash table, then we want
+		// to merge the probabilities of the two lines into one line
+		if (found) {
+			// One end of the line has to be our dot 
+			assert(line->a == dot2 || line->b == dot2);
+
+			// Ensure that no line has been left un updated after a
+			// constituent dot has been merged
+			assert(line->a->merge == NULL || line->a == dot2);
+			assert(line->b->merge == NULL || line->b == dot2);
+			assert(line2->a->merge == NULL);
+			assert(line2->b->merge == NULL);
+
+			// Create an undo for the line at its current weight
+			if (m->undo_flag == TRUE) {
+				m_create_line_undo(m, UNDO_LINE_WT, line2, NULL, NULL, line2->wt, 0);
+			}
+
+			// Convert the weights back to probabilities, then add them
+			p_new = exp(-line->wt/PRECISION) + exp(-line2->wt/PRECISION);
+
+			// Convert the new probability back to a weight
+			line2->wt = -log(p_new) * PRECISION;
+			if (line2->wt < PRECISION) {
+				line2->wt = PRECISION;
+			}
+			line2->wt -= line2->wt % 2;
+
+			// We are removing this line from both end points. Hence,
+			// we need to be able to undo and add it back to both ends.
+			// The end in dot_keep needs to be explictly remove, the
+			// end in dot2 is removed by nullifying the entire lines list.
+
+			if (m->undo_flag == TRUE) {
+				// dot2 has its lines nullified, so we need an undo to
+				// put this line back given that it is being removed
+				// and isn't being moved into another dot.
+				m_create_line_undo(m, UNDO_LINE_MOVE, line, dot2, NULL, 0, 0);
+
+				// Both line and line2 have the same destination at this
+				// point. We want to remove line from the dot we are
+				// keeping, as we have updated line2 to have the merged
+				// weight of the both lines.
+				//
+				// We don't want to do this if the dot being kept is a boundary
+				// as the line was never in there in the first place.
+				if (!dot_keep->v || dot_keep->v->v_num >= 0) { 
+					m_create_line_undo(m, UNDO_LINE_MOVE, line, dot_keep, NULL, 0, 0);
+				}
+			}
+			dot_keep->lines = ll_delete_node(dot_keep->lines, line);
+			if (m->undo_flag != TRUE) {
+				assert(d1 == dot2 || d2 == dot2);
+				assert(d1 == dot_keep || d2 == dot_keep);
+				free(line);
+			}
+
+			// If we have merged lines, then we have nothing else to do
+			// here as line2 already has the correct end points since
+			// it is from dot1 (the dot being merged into). It's also
+			// already in the hash table and the kept_lines list.
+			lln = lln->next;
+			continue;
+		}
+
+		// dot_keep is already completely merged, but the dX corresponding 
+		// to dot2 isn't currently merged. So traverse on down!
+		while (d1->merge != NULL) {
+			d1 = d1->merge;
+		}
+		while (d2->merge != NULL) {
+			d2 = d2->merge;
+		}
+
+		// One end of the line has to be our dot 
+		assert(line->a == dot2 || line->b == dot2);
+
+		// Ensure that no line has been left un updated after a
+		// constituent dot has been merged
+		assert(line->a->merge == NULL || line->a == dot2);
+		assert(line->b->merge == NULL || line->b == dot2);
+
+		// Insert the line into the hash table
+		ht_insert_key(line_ht, hash, line);
+			
+		// Update the line so that the end originally pointing to dot2,
+		// now points to dot1
+		if (m->undo_flag == TRUE) {
+			m_create_line_undo(m, UNDO_LINE_EDIT, line, line->a, line->b, 0, 0);
+		}
+		if (line->a == dot2) {
+			line->a = dot1;
+		} else {
+			line->b = dot1;
+		}
+
+		// We are moving this line from dot2 to dot1, so we need to
+		// keep an undo so that we can move the line back later
+		if (m->undo_flag == TRUE) {
+			m_create_line_undo(m, UNDO_LINE_MOVE, line, dot2, dot1, 0, 0);
+		}
+		kept_lines = ll_insert(kept_lines, line);
+
+		lln = lln->next;
+	}
+	
+	ht_free(line_ht, NULL);
+
+	ll_free(dot1->lines, NULL);
+	ll_free(lln_save, NULL);
+
+	// Update dot1 with the lines we've kept!
+	dot1->lines = kept_lines;
+}
+
+/**
+ * \brief Merges two dots when one of them is the boundary
+ * 
+ * \param[in] m The \ref matching to store the undo steps of the merge in
+ * \param[in] dot1 The \ref dot of the boundary to be merged into
+ * \param[in] dot2 The \ref dot being merged into the boundary
+ * \param[in] lln_save The \ref ll_node of lines that existed in dot2 before
+ * being merged 
+ */
+int qc_merge_dots_with_boundary(MATCHING *m, DOT *dot1, DOT *dot2, LL_NODE *lln_save) {
+	LL_NODE *lln, *lln2, *llnk;
+	LINE *line, *line2;
+	DOT *d1, *d2, *dot_keep;
+	double p_new;
+	int found;
+	int logical_error;
+
+	//m_print_dot(dot1);
+	//m_print_dot(dot2);
+
+	logical_error = FALSE;
+
+	// When the dot being kept (dot1) is a boundary, we do not have the luxury
+	// of a list of lines to compare between to determine when to merge. 
+	lln = lln_save; 
+	while (lln != NULL) {
+		line = (LINE *)lln->key;	
+		d1 = line->a;
+		d2 = line->b;
+
+		// dot1 in this instance is a boundary, so all lines will be moved from
+		// dot2 to nowhere, regardless of what is done elsewhere.
+		if (m->undo_flag == TRUE) {
+			m_create_line_undo(m, UNDO_LINE_MOVE, line, dot2, NULL, 0, 0);
+		}
+
+		// This line is between the dot (dot2) we are removing and
+		// another dot which we are going to keep. This dot can also be
+		// thought of as the "destination" of the line.
+		dot_keep = (d1 == dot2) ? d2 : d1;
+		assert(dot_keep->merge == NULL);
+	
+		// If this line is simply between the two dots being merged, do
+		// nothing, as we just remove internal edges (done already as
+		// dot2->lines was nullified in qc_merge_sets)
+		if ((d1 == dot1 && d2 == dot2) || (d2 == dot1 && d1 == dot2)) {
+			assert(dot_keep->lines == NULL);
+			if (m->undo_flag != TRUE) {
+				free(line);
+			}
+			lln = lln->next;
+			continue;
+		}
+
+		// We should never be merging lines into a boundary
+		assert(dot_keep->i >= 0);
+
+		// Loop the lines on the destination dot, looking to see if this
+		// destination is also connected to the same boundary as dot2. If it
+		// is, then the connection from dot_keep to the boundary and dot2 to
+		// the boundary need to be merged.
+		found = FALSE;
+		lln2 = dot_keep->lines;
+		while (lln2 != NULL) {
+			line2 = (LINE *)lln2->key;
+
+			assert(line->a->merge == NULL || line->a == dot2);
+			assert(line->b->merge == NULL || line->b == dot2);
+			assert(line2->a->merge == NULL || line2->a == dot2);
+			assert(line2->b->merge == NULL || line2->b == dot2);
+
+			llnk = lln2->next;
+
+
+			// Keep searching until we find a line with the boundary set (dot1)
+			// at one of the ends 
+			if (line2->a != dot1 && line2->b != dot1) {
+				lln2 = llnk;
+				continue;
+			}
+
+			// Create an undo for the line at its current weight
+			if (m->undo_flag == TRUE) {
+				m_create_line_undo(m, UNDO_LINE_WT, line2, NULL, NULL, line2->wt, 0);
+			}
+
+			// Convert the weights back to probabilities, then add them
+			p_new = exp(-line->wt/PRECISION) + exp(-line2->wt/PRECISION);
+
+			// Convert the new probability back to a weight
+			line2->wt = -log(p_new) * PRECISION;
+			if (line2->wt < PRECISION) {
+				line2->wt = PRECISION;
+			}
+			line2->wt -= line2->wt % 2;
+
+			// We have merged the line between dot_keep and dot2 into the line
+			// between dot_keep and dot1, hence we now want to remove line from
+			// dot_keep, else there would be two lines to the boundary.
+			if (m->undo_flag == TRUE) {
+				m_create_line_undo(m, UNDO_LINE_MOVE, line, dot_keep, NULL, 0, 0);
+			}	
+			dot_keep->lines = ll_delete_node(dot_keep->lines, line);
+
+			found = TRUE;
+			break;
+		}
+
+		// If a line was found and merged, then we don't need to update the
+		// line as it already has the correct end points
+		if (found) {
+			if (m->undo_flag != TRUE) {
+				free(line);
+			}
+
+			lln = lln->next;
+			continue;
+		}
+
+		assert(line->a == dot2 || line->b == dot2);
+		assert(line->a->merge == NULL || line->a == dot2);
+		assert(line->b->merge == NULL || line->b == dot2);
+
+		// Update the end points of the line so that references to dot2 are now
+		// pointing to dot1
+		if (m->undo_flag == TRUE) {
+			m_create_line_undo(m, UNDO_LINE_EDIT, line, line->a, line->b, 0, 0);
+		}
+		if (line->a == dot2) {
+			line->a = dot1;
+		} else {
+			line->b = dot1;
+		}
+
+		// If the line now has a boundary in line->a, then swap the
+		// order of the two dots. This is simply because matching
+		// determines when it has found all the lines base on the
+		// t value of line->a
+		if (line->a->i < 0) {
+			dot_keep = line->a;
+			line->a = line->b;
+			line->b = dot_keep;
+		}
+
+		lln = lln->next;
+	}
+	ll_free(lln_save, NULL);
+
+	return (!logical_error);
+}
+
+/**
  * \brief Merges two \link set Sets\endlink together
  *
  * Will return the merge result in the first set and free the memory associated
@@ -2619,30 +3598,264 @@ void qc_set_set_qc_heap_i(void *key, int i) {
  * \return The first \ref set provided, now merged with the second \ref set.
  */
 SET *qc_merge_sets(QC *qc, SET *set1, SET *set2) {
-	assert(set1->type == set2->type);
+	SET *setr, *setk;
+	SYNDROME *syn;
+	CDLL_NODE *node;
+	LL_NODE *lln_save, *lln;
+	DOT *dot1, *dot2, *dot_keep;
+	SET_POS *sp;
+	MATCHING *m;
+	MEASUREMENT *mt;
+	LINE *line;
+
+	/*
+	printf("### qc_merge_sets ###\n");
+	qc_print_set(set1);
+	qc_print_set(set2);
+	//*/
+
+	// Assert that the sets being merged are the same type
+	assert(
+		((set1->type == PRIMAL || set1->type == PRIMAL_BOUNDARY) && 
+			(set2->type == PRIMAL || set2->type == PRIMAL_BOUNDARY)) || 
+		((set1->type == DUAL || set1->type == DUAL_BOUNDARY) && 
+			(set2->type == DUAL || set2->type == DUAL_BOUNDARY)));
+
+	// We cannot merge sets if one of them is NULL
+	assert(set1 != NULL);
+	assert(set2 != NULL);
+
+	// qc_meas_qubit should ensure that we never reach this case.	
+	assert(set1 != set2);
+
+	// Sets shouldn't have a big_t value yet if they are being merged
 	assert(set1->big_t == LONG_MAX);
 	assert(set2->big_t == LONG_MAX);
-	assert(set1->bdy == set2->bdy || set1->bdy == NULL || set2->bdy == NULL);
-	assert(set1->ball == NULL);
-	assert(set2->ball == NULL);
+
+	setk = (qc_is_boundary_set(set1) || set1->t > set2->t) ? set1 : set2;
+	setr = (setk == set1) ? set2 : set1;
+
+	/*
+	printf("Keep Set: "); qc_print_set(setk);
+	printf("Remove Set: "); qc_print_set(setr);
+	//*/
+
+
+	//qc_print_set(set1);
+	//qc_print_set(set2);
+	//printf("%p %p\n", set1->bdy, set2->bdy);
+
+
+	// If we are merging a boundary set with another boundary set, or we are
+	// merging a boundary set with a set that is adjacent to the other boundary
+	// (effectively about to merge two boundaries) then we want to log a
+	// logical error and abort the merging process
+	if ((qc_is_boundary_set(set1) && qc_is_boundary_set(set2)) || 
+		(qc_is_boundary_set(setk) && (setr->bdy != NULL && setr->bdy != setk))) {
+
+		if (setk->type == PRIMAL || setk->type == PRIMAL_BOUNDARY) {
+			qc->logical_loss_err_pr += 1;
+		} else {
+			qc->logical_loss_err_du += 1;
+		}
+
+		//printf("\nM Logical Loss Error\n");
+		return NULL;
+	}
+	
+	// If we are using an advanced recipe, then we have dots already in
+	// existance at the time of merging. We therefore need to merge the dots in
+	// order to be able to continue.
+	if (qc->recipe_adv) {	
+
+		// If we are merging into a boundary set, there is a chance that the
+		// set being lost is connected to both boundaries. If we are merging
+		// this set, then this is a logical error. 
+		//
+		// Example:
+		// v1 is connected to bdy1, v2 is connected to bdy2, v1 and v2 are
+		// connected. v1 is merged with bdy1, then v2 is merged with bdy2. When
+		// v2 is merged with bdy2, it is connected to both bdy1 and bdy2, so
+		// this action will merge the boundaries, but is NOT caught by the
+		// previous check for logical loss errors.
+
+		if (qc_is_boundary_set(setk)) {
+			// Loop the lines of the dot being removed
+			lln = setr->ball->dot->lines; 
+			while (lln != NULL) {
+				line = (LINE *)lln->key;	
+				
+				// Find the destination
+				dot_keep = (line->a == setr->ball->dot) ? line->b : line->a;
+
+				// If the dot is a boundary, but is not the boundary we expect,
+				// then we have multiple boundaries, and should increase the
+				// loss error count and return immediately.
+				if (dot_keep->ball->type == PRIMAL_BOUNDARY || dot_keep->ball->type == DUAL_BOUNDARY) {
+					if (dot_keep != setk->ball->dot) {
+						if (set1->type == PRIMAL || set1->type == PRIMAL_BOUNDARY) {
+							qc->logical_loss_err_pr += 1;
+						} else {
+							qc->logical_loss_err_du += 1;
+						}
+
+						//printf("\nM2 Logical Loss Error\n");
+						return NULL;
+					}
+				}
+				lln = lln->next;
+			}
+		}
+		
+		// Sets shouldn't be finalized if they are being merged. 
+		assert(setr->ball->big_t == LONG_MAX);
+		assert(setk->ball->big_t == LONG_MAX);
+
+		// If the removed set is NOT a boundary, we expect it to have no t value.
+		if (setr->type == PRIMAL || setr->type == DUAL) {
+			assert(setr->ball->dot->t == LONG_MAX);
+		}
+		// If the kept set is NOT a boundary, we expect it to have no t value.
+		if (setk->type == PRIMAL || setk->type == DUAL) {
+			assert(setk->ball->dot->t == LONG_MAX);
+		}
+		
+		// Determine the type of the set being kept, and pick the correct matching
+		m = (setk->type == PRIMAL || setk->type == PRIMAL_BOUNDARY) ? qc->m_pr : qc->m_du;
+
+		dot1 = setk->ball->dot;
+		dot2 = setr->ball->dot;
+
+		// The dot being kept should never already have been merged into
+		// another dot.
+		assert(dot1->merge == NULL);
+
+		// We are about to merge the dot2 into dot1, so we need to be able to
+		// undo this process 
+		if (m->undo_flag == TRUE) {
+			m_create_line_undo(m, UNDO_DOT_MERGE, NULL, dot2, dot2->merge, 0, 0);
+		}
+
+		// Save the list of lines from dot2, before NULLing the list and
+		// setting dot2 to be merged into dot1.  
+		lln_save = dot2->lines;
+		dot2->lines = NULL;
+		dot2->merge = dot1;
+
+		if (!qc_is_boundary_set(setk)) {
+			qc_merge_dots_without_boundary(m, dot1, dot2, lln_save);
+		} else {
+			qc_merge_dots_with_boundary(m, dot1, dot2, lln_save);
+		}
+
+		if (m->undo_flag == FALSE) {
+			// If this process is not going to be undone, this ball will never
+			// be used again and hence can be freed.
+			if (setr->ball->type == PRIMAL) {
+				qc_delete_ball(qc->nest_pr, setr->ball);
+			} else {
+				assert(setr->ball->type == DUAL);
+				qc_delete_ball(qc->nest_du, setr->ball);
+			}
+		}
+
+		if (m->undo_flag == FALSE) {
+			// After this loop ends, there is no longer any lines pointing to
+			// this dot. This dot continues to exist as the lattice uses it to
+			// find what it has been merged into. That is, this dot still
+			// resides where it does, however dot->merge will be followed to
+			// find the dot1 that was just merged with. There is, however, no
+			// way to determine where these `zombie` dots when it comes to time
+			// delete, and hence they need to be tracked in this list. 
+			dot2->t = qc->big_t;
+			cdll_insert_head(qc->zombie_dots, dot2, NULL);
+			//printf("Zombie Dots: %d\n", cdll_length(qc->zombie_dots));
+		}
+	}
+	
+
+	/***********************/
 
 	// Remove set2 from the quantum computer
-	qc_uninsert_set(qc, set2);
+	qc_uninsert_set(qc, setr);
 
-	// Add the measurements from set2 to set1
-	set1->num_meas_left += set2->num_meas_left;
+	// Add the measurements from the set being removed to the set being kept.
+	// Given that boundaries do not track remaining measurements, only do this
+	// if the set being kept is not a boundary.
+	if (!qc_is_boundary_set(setk)) {
+		setk->num_meas_left += setr->num_meas_left;
 
-	// If set1 didn't have a boundary, merge it with set2
-	if (set1->bdy == NULL) {
-		set1->bdy = set2->bdy;
+		// If the set being kept wasn't next to the boundary, give it the boundary
+		// of the set being removed.
+		if (setk->bdy == NULL) {
+			setk->bdy = setr->bdy;
+		}
 	}
 
-	// Join the syndrome and measurement cdlls, then free set2
-	cdll_join(set1->syn_cdll, set2->syn_cdll);
-	cdll_join(set1->mt_cdll, set2->mt_cdll);
-	qc_free_set(set2);
+	// Merge the set_pos cdlls into the set being kept. This can/is used from
+	// ex to update tracking of set locations.
+	cdll_join(setk->set_pos_cdll, setr->set_pos_cdll);
 
-	return set1;
+	// Move the syndromes into the kept set. We do this even with boundaries as
+	// syndromes are recycled and they need to be kept somewhere.
+	cdll_join(setk->syn_cdll, setr->syn_cdll);
+	
+	if (!qc_is_boundary_set(setk)) {
+		// Join the measurement cdlls from the set being removed into the set
+		// being kept. 
+		cdll_join(setk->mt_cdll, setr->mt_cdll);
+
+		// Nullify the pointers for the syndrome and measurement cdlls so that the
+		// set can be removed cleanly.
+		setr->mt_cdll = NULL;
+	} else {
+		node = setr->mt_cdll->next;
+		assert(setk->ball->mp == 1);
+		setk->ball->mp = 1;
+		while (node != setr->mt_cdll) {
+			mt = (MEASUREMENT *)node->key;
+			setk->ball->mp *= mt->m;
+			node = node->next;
+		}
+	}
+
+	// Loop the new set_pos cdll and make sure they all point to the kept set
+	node = setk->set_pos_cdll->next;
+	while (node != setk->set_pos_cdll) {
+		sp = (SET_POS *)node->key;
+		sp->set = setk;	
+		node = node->next;
+	}
+
+	// Update all the syndromes in the newly merged set to point to the set we
+	// are keeping.
+	node = setk->syn_cdll->next;
+	while (node != setk->syn_cdll) {
+		syn = (SYNDROME *)node->key;
+		if (syn->set != setk) {
+			syn->set = setk;
+		}
+
+		// If merging into the boundary, advance the syndrome.
+		if (setk->type == PRIMAL_BOUNDARY || setk->type == DUAL_BOUNDARY) {
+			syn->t = 1;
+			bh_bubble_down_key(qc->syn_heap, syn->qc_heap_i,
+				qc_syndrome_lt_t, qc_syndrome_swap);
+		}
+
+		node = node->next;
+	}
+
+	setr->syn_cdll = NULL;
+	setr->set_pos_cdll = NULL;
+
+	qc_free_set(setr);
+
+	//qc_print_set(setk);
+	//if (setk->copy) {
+	//	qc_print_set(setk->copy);
+	//}
+	return setk;
 }
 
 /**
@@ -2653,40 +3866,80 @@ SET *qc_merge_sets(QC *qc, SET *set1, SET *set2) {
  * \param[in] t The time to finalize 
  */
 void qc_finalize_set(QC *qc, SET *set, long int t) {
-	CDLL_NODE *n;
+	CDLL_NODE *n, *n2;
 	SYNDROME *syn;
 	MEASUREMENT *mt;
-	CDLL_NODE *n2;
 	ERROR *err;
 	DLL_NODE *dlln;
-	int i;
 	DE *de;
 	STICK *stick;
+	int i;
+
+	if (qc_is_boundary_set(set)) {
+		n = set->syn_cdll->next;
+		while (n != set->syn_cdll) {
+			syn = (SYNDROME *)n->key;
+			if (syn->set == set) {
+				syn->t = t;
+				bh_bubble_down_key(qc->syn_heap, syn->qc_heap_i,
+					qc_syndrome_lt_t, qc_syndrome_swap);
+			}
+			n = n->next;
+		}
+
+		// Get the syndrome qubit with the lowest t
+		syn = (SYNDROME *)qc->syn_heap->k[1];
+
+		// If the lowest syndrome qubit t is greater than 0, then all syndrome
+		// qubits have been measured. Increment big_t and finalize nests.
+		//
+		// With asynchronous circuits, errors can create sticks with both balls
+		// having big_t two greater
+		if (syn->t > 0) {
+			qc_increment_big_t(qc);
+			qc_finalize_nests(qc, qc->big_t - 3);
+		}
+
+		return;
+	}
 
 	// Initialised to NULL to avoid using unitialised (quiet compiler warning) 
 	HT *err_ht = NULL;
 
 	// Update the big_t in the set to be the current big_t, the bubble its
 	// location in the set heap inside qc
+	if (set->t == LONG_MAX) {
+		set->t = t;
+	}
+	if (set->t != t) {
+		printf("set->t: %ld, t: %ld, set->big_t: %ld\n", set->t, t, set->big_t);
+		assert(set->t == t);
+	}
 	set->big_t = qc->big_t;
 	bh_bubble_up_key(qc->set_heap, set->qc_heap_i,
 		qc_set_lt_big_t, qc_set_swap);
 
-	// Create a ball for the set and insert it into the correct nest
-	set->ball = qc_create_ball(set, STICK_HT_SIZE);
-	if (set->type == PRIMAL) {
-		qc_insert_ball(qc->nest_pr, set->ball);
-	}
-	else {
-		qc_insert_ball(qc->nest_du, set->ball);
+	// If we are using an advanced recipe, these values were set at the time of
+	// creation of the set
+	if (!qc->recipe_adv) {
+		// Create a ball for the set and insert it into the correct nest
+		set->ball = qc_create_ball_adv(set, STICK_HT_SIZE);
+
+		if (set->type == PRIMAL) {
+			qc_insert_ball(qc->nest_pr, set->ball);
+		}
+		else {
+			qc_insert_ball(qc->nest_du, set->ball);
+		}
 	}
 
 	// Create a hash table for all the errors in the set
 	if (qc->track) {
-		err_ht = ht_create(set->num_errors);
+		err_ht = ht_create(set->num_errors * 10);
 	}
 
 	// Set the measurement product
+	//qc_print_set(set);
 	set->ball->mp = 1;
 
 	// Loop the measurements in the set
@@ -2748,6 +4001,7 @@ void qc_finalize_set(QC *qc, SET *set, long int t) {
 
 					// Insert the error into the stick
 					stick->error_ll = ll_insert(stick->error_ll, err);
+					err->stick = stick;
 					stick->num_errors++;
 				}
 
@@ -2760,6 +4014,18 @@ void qc_finalize_set(QC *qc, SET *set, long int t) {
 		}
 
 		ht_free(err_ht, NULL);
+	} 
+	
+	// If tracking is off, and an advanced recipe is available, then we want to
+	// mark the ball as finalized by setting its big_t and then inserting it
+	// into qc->finalized_balls to be converted later.
+	else if (qc->recipe_adv) {
+		if (set->ball->type != PRIMAL_BOUNDARY && set->ball->type != DUAL_BOUNDARY) {
+			set->ball->big_t = set->big_t;
+			assert(set->ball->t == set->t);
+		}
+
+		cdll_insert_head(qc->finalized_balls, set->ball, NULL);
 	}
 
 	// Update each syndrome qubit, setting their time to be the given t, then
@@ -2920,6 +4186,19 @@ NEST *qc_create_nest(int stick_ht_size) {
  * \param[in] nest The \ref nest to be freed
  */
 void qc_free_nest(NEST *nest) {
+	/*
+	int clen;
+	CDLL_NODE *n;
+
+	clen = 0;
+	n = nest->ball_cdll->next;
+	while (n != nest->ball_cdll) {
+		clen++;
+		n = n->next;
+	}
+	printf("len: %d\n", clen);
+	*/
+
 	cdll_free(nest->ball_cdll, qc_free_void_ball);
 	cdll_free(nest->stick_cdll, qc_free_void_stick);
 	ht_free(nest->stick_ht, NULL);
@@ -3018,7 +4297,9 @@ void qc_trim_nests(QC *qc, long int big_t) {
 	 */
 	CDLL_NODE *s, *n, *nt;
 	BALL *b;
+	DOT *d;
 	ERROR *error;
+	long int t;
 
 	// Delete all balls from the primary nest where b->big_t is less than the
 	// provided big_t
@@ -3040,6 +4321,20 @@ void qc_trim_nests(QC *qc, long int big_t) {
 		n = n->prev;
 		qc_delete_ball(qc->nest_du, b);
 		b = (BALL *)n->key;
+	}
+
+	t = qc->m_pr->t - qc->m_pr->t_delete;
+	s = qc->zombie_dots;
+	n = s->prev;
+	d = (DOT *)n->key;
+	while (n != s && d->t <= t) {
+		n = n->prev;
+
+		ht_delete_key(qc->m_pr->dot_ht, qc_hash_ijt(d->i, d->j, d->little_t), d, NULL);
+		ht_delete_key(qc->m_du->dot_ht, qc_hash_ijt(d->i, d->j, d->little_t), d, NULL);
+		cdll_delete_node(n->next, m_free_void_dot);
+
+		d = (DOT *)n->key;
 	}
 
 	// With asynchronous circuits, an error can lead to a stick with both balls
@@ -3067,6 +4362,8 @@ void qc_trim_nests(QC *qc, long int big_t) {
 			assert(error->q_cdlln != NULL);
 			cdll_delete_node(error->q_cdlln, NULL);
 			ht_delete_key(error->q->error_ht, error->label, error, NULL);
+			error->q_cdlln = NULL;
+
 			error->q->num_errors--;
 			assert(error->q->num_errors == error->q->error_ht->num_elem);
 		}
@@ -3078,6 +4375,7 @@ void qc_trim_nests(QC *qc, long int big_t) {
 		// avoid needing yet another variable.
 		else if (error->q_cdlln != NULL) {
 			cdll_delete_node(error->q_cdlln, NULL);
+			error->q_cdlln = NULL;
 		}
 
 		qc_free_error(error);
@@ -3101,6 +4399,193 @@ void qc_convert_nests(QC *qc, int undo) {
 			printf("Finite case not yet supported");
 			exit(0);
 		}
+	}
+	else if (qc->recipe_adv != NULL) {
+		CDLL_NODE *cdlln, *cdlln2, *cdlln_temp, *n, *valid_cdll;
+		BALL *ball;
+		MATCHING *matching;
+		LL_NODE *lln;
+		LINE *line, *line2;
+		DOT *a, *b, *other;
+		int valid;
+
+		/*
+		 * This code became highly non-trivial due to a rare edge case where it
+		 * was possible that a ball that should be finalized however all the
+		 * balls around it belonged to sets that would be finalized in the
+		 * future. This would cause a dot to be inserted into the matching with
+		 * no viable lines, and hence could not be matched. This code was
+		 * updated to ensure that all balls actually had a viable line to
+		 * follow before being created.
+		 */
+
+		/*
+		 * Step 1: Loop all the finalized balls and set them to have a dot->t
+		 * value. This essentially marks them as "possibly finalized".
+		 */
+
+		//printf("%p %p\n", qc->finalized_balls->key, qc->finalized_balls->prev->key);
+		
+		//cdll_print(qc->finalized_balls, qc_print_void_ball);
+
+		valid_cdll = cdll_create();
+
+		cdlln = qc->finalized_balls->prev;
+		while (cdlln != qc->finalized_balls) {
+			ball = (BALL *)cdlln->key;
+
+			if (ball->big_t >= qc->unfinalized_big_t) {
+				cdlln = cdlln->prev;
+				break;
+			}
+
+			matching = (ball->type == PRIMAL) ? qc->m_pr : qc->m_du;
+
+			if (ball->type != PRIMAL_BOUNDARY && ball->type != DUAL_BOUNDARY) {
+				ball->dot->t = ball->big_t;
+	
+				if (ball->dot->little_t != ball->t) {
+					m_print_dot(ball->dot);
+					assert(ball->dot->little_t == ball->t);
+				}
+
+				// Keep track of the potentially valid balls
+				cdll_insert_head(valid_cdll, ball, NULL);
+			}
+
+			cdlln = cdlln->prev;
+		}
+
+		/*
+		 * Step 2: Identify which dots have no valid lines because they only
+		 * connect to dots that aren't finalized. 
+		 */
+			
+		cdlln = valid_cdll->prev;
+		while (cdlln != valid_cdll) {
+			ball = (BALL *)cdlln->key;
+			matching = (ball->type == PRIMAL) ? qc->m_pr : qc->m_du;
+
+			valid = FALSE;
+			lln = ball->dot->lines;
+			while (lln != NULL) {
+				line2 = (LINE *)lln->key;
+				other = (line2->a == ball->dot) ? line2->b : line2->a;
+				if (other->t != LONG_MAX) {
+					valid = TRUE;
+					break;
+				}
+				lln = lln->next;
+			}
+
+			if (!valid) {
+				//printf("Can't convert invalid ball.\n");
+				//m_print_dot(ball->dot);
+				//ll_print(ball->dot->lines, m_print_void_line);
+
+				ball->dot->t = LONG_MAX;
+
+				cdlln_temp = cdlln->prev;
+				cdll_delete_node(cdlln, NULL);
+				cdlln = cdlln_temp;
+				continue;
+			}
+
+			cdlln = cdlln->prev;
+		}
+
+		cdlln = valid_cdll->prev;
+		while (cdlln != valid_cdll) {
+			ball = (BALL *)cdlln->key;
+			ball->dot->t = LONG_MAX;
+			cdlln = cdlln->prev;
+		}
+
+		cdlln = valid_cdll->prev;
+		while (cdlln != valid_cdll) {
+			ball = (BALL *)cdlln->key;
+			matching = (ball->type == PRIMAL) ? qc->m_pr : qc->m_du;
+
+			// Insert the dot into the matching
+			n = cdll_create_node(ball->dot);
+			cdll_insert_node_head(matching->dots, n);
+			matching->num_dots++;
+
+			if (matching->undo_flag == TRUE) {
+				m_create_undo(matching, UNDO_INSERT_DOT, NULL, ball->dot->t, NULL, NULL, n);
+
+				// We set the undo for the dot time here, as we don't want to
+				// create it until after we've confirmed the dot is indeed valid
+				m_create_line_undo(matching, UNDO_DOT_T, NULL, ball->dot, NULL, 0, ball->dot->t);
+			}
+
+			ball->dot->t = ball->big_t;
+
+			/*
+			 * Because all dots are made "valid" ahead of time, both dots will
+			 * want to create the edge between the two dots. This used to be
+			 * avoided by handling the dots in order, however we can no longer
+			 * do that due to needing to work out all the potentially final
+			 * dots before we can determine if a dot truly has no lines to
+			 * follow. 
+			 */
+
+			lln = ball->dot->lines;
+			while (lln != NULL) {
+
+				line = (LINE *)lln->key;
+				a = line->a;
+				b = line->b;
+
+				if (a == ball->dot && b->t > ball->big_t) {
+					//printf("SKIP LINE TO FUTURE ");	m_print_line(line);
+					lln = lln->next;
+					continue;
+				}
+				if (b == ball->dot && a->t > ball->big_t) {
+					//printf("SKIP LINE TO FUTURE ");	m_print_line(line);
+					lln = lln->next;
+					continue;
+				}
+
+				m_insert_line(matching, line);
+				lln = lln->next;
+			}
+
+			if (ball->mp < 0) {
+				VERTEX *v = m_create_vertex(ball->i, ball->j, ball->big_t, ball->dot);
+				if (ball->type != PRIMAL_BOUNDARY && ball->type != DUAL_BOUNDARY) {
+					m_insert_vertex(matching, v);	
+					if (matching->undo_flag == TRUE) {
+						m_create_undo(matching, UNDO_CREATE_VERTEX, v, 0, NULL, NULL, NULL);
+					}
+				}
+				else {
+					v->v_num = ball->i;
+
+					// Prevents time abort as boundary sets
+					// create boundary dots with t = INT_MAX
+					ball->dot->t = -1;
+				}
+			}
+
+			// Clean up this ball from the finalized_balls list
+			cdlln2 = qc->finalized_balls->prev;
+			while (cdlln2 != qc->finalized_balls) {
+				cdlln_temp = cdlln2->prev;
+				if (cdlln->key == cdlln2->key) {
+					cdll_delete_node(cdlln2, NULL);
+					break;
+				}
+				cdlln2 = cdlln_temp;
+			}
+
+			cdlln = cdlln->prev;
+		}
+
+		cdll_free(valid_cdll, NULL);
+
+		//printf("%p %p\n", qc->finalized_balls->key, qc->finalized_balls->prev->key);
 	}
 	else {
 		// Convert the nests without recipe guidance
@@ -3133,7 +4618,6 @@ void qc_convert_nest(QC *qc, NEST *nest, MATCHING *m, int undo) {
 	n = nest->last_converted_ball_cdlln->prev;
 	ball = (BALL *)n->key;
 	while (n != nest->ball_cdll && ball->big_t < qc->unfinalized_big_t) {
-
 		// If the ball has no dot, create and insert one
 		if (ball->dot == NULL) {
 			// If the measurement product is negative, then create a vertex
@@ -3143,10 +4627,17 @@ void qc_convert_nest(QC *qc, NEST *nest, MATCHING *m, int undo) {
 			else {
 				dot = m_create_and_insert_dot(m, ball);
 			}
-		}
-		else {
-			dot = ball->dot;
-		}
+			ball->dot = dot;
+		}			
+
+		n = n->prev;
+		ball = (BALL *)n->key;
+	}
+
+	n = nest->last_converted_ball_cdlln->prev;
+	ball = (BALL *)n->key;
+	while (n != nest->ball_cdll && ball->big_t < qc->unfinalized_big_t) {
+		dot = ball->dot;
 
 		// For each stick in the ball
 		ht = ball->stick_ht;
@@ -3157,10 +4648,19 @@ void qc_convert_nest(QC *qc, NEST *nest, MATCHING *m, int undo) {
 
 				// Find the destination ball for the stick
 				ball2 = (s->a == ball) ? s->b : s->a;
-
+				
 				// If there is no dot on the destination ball, create and
 				// insert it.
 				if (ball2->dot == NULL) {
+					// If the destination doesn't already have a dot, then it's
+					// unfinalized, so we don't want to create it yet. However,
+					// boundaries wont have dots, so we do want to create a dot
+					// for them that this ball is connected to.
+					if (ball2->type != PRIMAL_BOUNDARY && ball2->type != DUAL_BOUNDARY) {
+						n2 = n2->next;
+						continue;
+					}
+
 					// If the measurement product is negative, then create a vertex
 					if (ball2->mp < 0) {
 						dot2 = m_create_and_insert_dot_and_vertex(m, ball2);
@@ -3168,6 +4668,7 @@ void qc_convert_nest(QC *qc, NEST *nest, MATCHING *m, int undo) {
 					else {
 						dot2 = m_create_and_insert_dot(m, ball2);
 					}
+					ball2->dot = dot2;
 				}
 				else {
 					dot2 = ball2->dot;
@@ -3180,10 +4681,11 @@ void qc_convert_nest(QC *qc, NEST *nest, MATCHING *m, int undo) {
 			}
 		}
 
-		nest->last_converted_ball_cdlln = n;
 		n = n->prev;
 		ball = (BALL *)n->key;
 	}
+	
+	nest->last_converted_ball_cdlln = n->next;
 }
 
 /** @} */
@@ -3208,18 +4710,79 @@ void qc_convert_nest(QC *qc, NEST *nest, MATCHING *m, int undo) {
  * \return The newly created \ref ball
  */
 BALL *qc_create_ball(SET *set, int stick_ht_size) {
+	return qc_create_ball_raw(set->type, set->i, set->j, set->big_t, stick_ht_size);
+}
+
+/**
+ * \brief Creates a new \ref ball, suitable for advanced recipe usage
+ * 
+ * \param[in] set The \ref set to convert to a ball
+ * \param[in] stick_ht_size The size of the hash table to use for the \ref stick%s. 
+ */
+BALL *qc_create_ball_adv(SET *set, int stick_ht_size) {
+	return qc_create_ball_raw_adv(set->type, set->i, set->j, set->t, set->big_t, stick_ht_size);
+}
+
+/**
+ * \brief Creates a new \ref ball from raw parameters
+ * 
+ * \param[in] type The type of \ref ball
+ * \param[in] i The i coordinate
+ * \param[in] j The j coordinate
+ * \param[in] big_t The big_t coordinate
+ * \param[in] stick_ht_size The size of the hash table to use for the \ref stick%s. 
+ *
+ * \return The newly created \ref ball
+ */
+BALL *qc_create_ball_raw(int type, int i, int j, long int big_t, int stick_ht_size) {
 	BALL *ball;
 
 	ball = (BALL *)my_malloc(sizeof(BALL));
 
-	ball->type = set->type;
-	ball->i = set->i;
-	ball->j = set->j;
-	ball->big_t = set->big_t;
+	ball->type = type;
+	ball->i = i;
+	ball->j = j;
+	ball->t = 0;
+	ball->big_t = big_t;
 	ball->stick_ht = ht_create(stick_ht_size);
 	ball->nest_cdlln = NULL;
 	ball->mp = 0;
-	ball->dot = NULL;		
+	ball->dot = NULL;
+	ball->hash_ijt = INT_MAX;
+
+	ball->copy = NULL;
+
+	return ball;
+}
+
+/**
+ * \brief Creates a new \ref ball from raw parameters, suitable for an advanced recipe
+ * 
+ * \param[in] type The type of \ref ball
+ * \param[in] i The i coordinate
+ * \param[in] j The j coordinate
+ * \param[in] t The t coordinate 
+ * \param[in] big_t The big_t coordinate
+ * \param[in] stick_ht_size The size of the hash table to use for the \ref stick%s. 
+ *
+ * \return The newly created \ref ball
+ */
+BALL *qc_create_ball_raw_adv(int type, int i, int j, long int t, long int big_t, int stick_ht_size) {
+	BALL *ball;
+
+	ball = (BALL *)my_malloc(sizeof(BALL));
+
+	ball->type = type;
+	ball->i = i;
+	ball->j = j;
+	ball->t = t;
+	ball->big_t = big_t;
+	ball->stick_ht = ht_create(stick_ht_size);
+	ball->nest_cdlln = NULL;
+	ball->mp = 0;
+	ball->dot = NULL;
+
+	ball->hash_ijt = qc_hash_ball(ball);
 	
 	ball->copy = NULL;
 
@@ -3234,7 +4797,6 @@ BALL *qc_create_ball(SET *set, int stick_ht_size) {
  * \param[in] ball The \ref ball to be freed
  */
 void qc_free_ball(BALL *ball) {
-	//printf("qc_free_ball\n");
 	// If the ball is a boundary, then also free the dot
 	if (ball->type == PRIMAL_BOUNDARY || ball->type == DUAL_BOUNDARY) {
 		if (ball->dot != NULL) {
@@ -3266,6 +4828,8 @@ void qc_free_ball(BALL *ball) {
  * \param[in] key The \ref ball to be freed
  */
 void qc_free_void_ball(void *key) {
+	//printf("FREE VOID BALL\n");
+	//qc_print_ball((BALL *)key);
 	qc_free_ball((BALL *)key);
 }
 
@@ -3286,7 +4850,6 @@ void qc_insert_ball(NEST *nest, BALL *ball) {
  * \param[in] ball The \ref ball to be deleted 
  */
 void qc_delete_ball(NEST *nest, BALL *ball) {
-	//printf("qc_delete_ball\n");
 	HT *ht;
 	int i;
 	DLL_NODE *n;
@@ -3624,6 +5187,48 @@ RECIPE *qc_create_recipe(int type, int size, int n, int m) {
 }
 
 /**
+ * \brief Creates a \ref recipe_adv
+ *
+ * \param[in] type The type of \ref recipe_adv 
+ * 
+ * \return The newly created \ref recipe_adv
+ */
+RECIPE_ADV *qc_create_recipe_adv(int type, int n, int m, int copy) {
+	RECIPE_ADV *recipe;
+	int i, j;
+
+	recipe = (RECIPE_ADV *)my_malloc(sizeof(RECIPE_ADV));
+	recipe->n = n;
+	recipe->m = m;
+	recipe->type = type;
+	recipe->in_cycle = FALSE;
+	recipe->cycle_t0 = LONG_MAX;
+	recipe->cycle_period = 0;
+	recipe->cycle_len = 0;
+	recipe->cycle_begin = NULL;
+	recipe->cycle_end = NULL;
+
+	recipe->min_horz_wt_pr = INT_MAX;
+	recipe->min_horz_wt_du = INT_MAX;
+
+	recipe->t_arr = (long int **)my_2d_calloc(n, m, sizeof(long int));
+	recipe->block_arr = (CDLL_NODE ***)my_2d_calloc(n, m, sizeof(CDLL_NODE *));
+
+	if (!copy) {
+		recipe->block_cdll = cdll_create();
+		recipe->block_ht = ht_create(RECIPE_ADV_BLOCK_HT_SIZE);
+		recipe->offset_ht = ht_create(RECIPE_ADV_OFFSET_HT_SIZE);
+		for (i = 0; i < n; i++) {
+			for (j = 0; j < m; j++) {
+				recipe->block_arr[i][j] = cdll_create();
+			}
+		}
+	}
+
+	return recipe;
+}
+
+/**
  * \brief Frees a \ref recipe
  * 
  * \param[in] recipe The recipe to be freed
@@ -3635,7 +5240,6 @@ void qc_free_recipe(RECIPE *recipe) {
 	if (recipe == NULL) {
 		return;
 	}
-
 	// Free each of the layers
 	for (i = 0; i < recipe->size; i++) {
 		qc_free_layer(recipe->layers[i], recipe->n);
@@ -3650,6 +5254,64 @@ void qc_free_recipe(RECIPE *recipe) {
 	ll_free(recipe->blocks, qc_free_void_block);
 	ll_free(recipe->offsets, free);
 	free(recipe);
+}
+
+/**
+ * \brief Frees an advanced recipe
+ * 
+ * \param[in] recipe The \ref recipe_adv to free
+ */
+void qc_free_recipe_adv(RECIPE_ADV *recipe) {
+	int i, j;
+	// If there is no recipe, do nothing
+	if (recipe == NULL) {
+		return;
+	}
+
+	for (i = 0; i < recipe->n; i++) {
+		for (j = 0; j < recipe->m; j++) {
+			cdll_free(recipe->block_arr[i][j], NULL);
+		}
+	}
+
+	my_2d_free(recipe->n, (void **)recipe->block_arr);
+	my_2d_free(recipe->n, (void **)recipe->t_arr);
+
+	// Free the blocks and offsets
+	ht_free(recipe->block_ht, qc_free_void_block);
+	ht_free(recipe->offset_ht, free);
+	cdll_free(recipe->block_cdll, NULL);
+	free(recipe);
+}
+
+/**
+ * \brief Resets an advanced recipe
+ * 
+ * \param[in] recipe The \ref recipe_adv to be reset
+ */
+void qc_reset_recipe_adv(RECIPE_ADV *recipe) {
+	int i;
+	int j;
+	CDLL_NODE *cdlln;
+
+	// Need to reset the state that determines if we are in the cycle
+	recipe->in_cycle = FALSE;
+
+	// Need to reset the time array that tracks where each set is
+	my_2d_free(recipe->n, (void **)recipe->t_arr);
+	recipe->t_arr = (long int **)my_2d_calloc(recipe->n, recipe->m, sizeof(long int));
+
+	// Need to cycle each of the block cdlls to their head nodes so that they
+	// start in the correct positions.
+	for (i = 0; i < recipe->n; i++) {
+		for (j = 0; j < recipe->m; j++) {
+			cdlln = (CDLL_NODE *)recipe->block_arr[i][j];
+			while (cdlln->key != NULL) {
+				cdlln = cdlln->next;
+			}
+			recipe->block_arr[i][j] = cdlln;
+		}
+	}
 }
 
 /** @} */
@@ -3826,6 +5488,12 @@ BLOCK *qc_create_block(RECIPE *recipe, BALL *ball, int type) {
 
 	assert(ball != NULL);
 
+	block->i = INT_MAX; // Unused
+	block->j = INT_MAX; // Unused
+	block->t = LONG_MAX; // Unused
+	block->big_t = LONG_MAX; // Unused
+	block->hash_ijt = INT_MAX; // Unused
+
 	// Loop all of the sticks in the ball
 	ht = ball->stick_ht;
 	for (i = 0; i < ht->length; i++) {
@@ -3841,6 +5509,7 @@ BLOCK *qc_create_block(RECIPE *recipe, BALL *ball, int type) {
 			if (wt < PRECISION) {
 				wt = PRECISION;
 			}
+			wt -= wt % 2;
 			
 			//
 			// Create an offset corresponding to the stick
@@ -3894,6 +5563,111 @@ BLOCK *qc_create_block(RECIPE *recipe, BALL *ball, int type) {
 }
 
 /**
+ * \brief Creates a block and inserts it into an advanced recipe
+ * 
+ * \param[in,out] recipe The \ref recipe_adv to insert the \ref block into.
+ * \param[in] ball The \ref ball to convert into a \ref block
+ *
+ * \return The newly created \ref block
+ */
+BLOCK *qc_create_block_adv(RECIPE_ADV *recipe, BALL *ball) {
+	int i, d_i, d_j, wt;
+	long int d_t;
+	HT *ht;
+	STICK *stick;
+	BLOCK *block;
+	DLL_NODE *dlln;
+	BALL *a, *b;
+	OFFSET *offset, *found;
+
+	block = (BLOCK *)my_malloc(sizeof(BLOCK));
+	block->id = -1;
+	block->offsets = NULL;
+
+	assert(ball != NULL);
+
+	block->i = ball->i;
+	block->type = ball->type;
+	block->j = ball->j;
+	block->t = ball->t;
+	block->big_t = ball->big_t;
+	block->hash_ijt = ball->hash_ijt;
+
+	// Loop all of the sticks in the ball
+	ht = ball->stick_ht;
+	for (i = 0; i < ht->length; i++) {
+		dlln = ht->table[i];
+		while (dlln != NULL) {
+			stick = (STICK *)dlln->key;
+
+			a = stick->a;
+			b = stick->b;
+
+			// Convert the stick to a weight
+			wt = -log(stick->p_stick)*PRECISION;
+			if (wt < PRECISION) {
+				wt = PRECISION;
+			}
+			wt -= wt % 2;
+
+			//printf("[%d] ", wt);
+			//printf("line a (%d, %d, %ld, %p)", a->i, a->j, a->big_t, a);
+			//printf(" b (%d, %d, %ld, %p)\n", b->i, b->j, b->big_t, b);
+
+			//
+			// Create an offset corresponding to the stick
+			//
+
+			// If we are connected to the boundary we
+			// want to use a spacial coordinate for
+			// the offset, as to signify which boundary
+			// we are connected to.
+			if (a->type == PRIMAL_BOUNDARY || a->type == DUAL_BOUNDARY) {
+				offset = qc_create_offset_adv(a->i, a->j, a->t, wt, a->type);
+			}
+			else if (b->type == PRIMAL_BOUNDARY || b->type == DUAL_BOUNDARY) {
+				offset = qc_create_offset_adv(b->i, b->j, b->t, wt, b->type);
+			}
+
+			// Calculate the delta coordinates based on
+			// taking the value of the coordinates of the
+			// considered ball away from the ball at the
+			// other end of the stick. That is, a - b, if
+			// the current ball is b
+			else {
+				d_i = (a == ball) ? b->i - a->i : a->i - b->i;
+				d_j = (a == ball) ? b->j - a->j : a->j - b->j;
+				d_t = (a == ball) ? b->t - a->t : a->t - b->t;
+
+				offset = qc_create_offset_adv(d_i, d_j, d_t, wt, a->type);
+			}
+
+			found = qc_offset_lookup_adv(recipe->offset_ht, offset->hash_ijt, offset);
+			if (!found) {
+				ht_insert_key(recipe->offset_ht, offset->hash_ijt, offset);
+				found = offset;
+			} else {
+				// If we found the offset already, we don't need the one we
+				// just made.
+				free(offset);
+			}
+
+			/*** FILTER OFFSETS TO THE FUTURE ***/
+			if (found->type != PRIMAL_BOUNDARY && found->type != DUAL_BOUNDARY && found->t > 0) {
+				dlln = dlln->next;
+				continue;
+			}
+
+			block->offsets = ll_insert_sorted(block->offsets, found, qc_offset_lt_adv);
+
+			dlln = dlln->next;
+		}
+	}
+
+	return block;
+}
+
+/**
  * \brief Create and insert \link block Blocks\endlink into a \ref layer
  * 
  * \param[in] qc The \qc that will be used with the \ref recipe
@@ -3912,7 +5686,7 @@ void qc_create_and_insert_blocks(QC *qc, RECIPE *recipe, LAYER *layer, long int 
 
 	current_ball = nest->last_blocked_ball_cdlln->prev;
 
-	// Loop over the latest layer of finalised balls. 
+	// Loop over the latest layer of finalised balls.
 	// Create any new blocks, and create a new layer
 	// to store the blocks that have occured.
 
@@ -3942,6 +5716,7 @@ void qc_create_and_insert_blocks(QC *qc, RECIPE *recipe, LAYER *layer, long int 
 
 		// Keep track of how many blocks are in the layer
 		// helpful for knowing how many balls are created 
+		// BLOCK *block;
 		// for a given layer when converting the layer to
 		// dots and lines.
 		if (type == PRIMAL) {
@@ -3960,6 +5735,170 @@ void qc_create_and_insert_blocks(QC *qc, RECIPE *recipe, LAYER *layer, long int 
 			break;
 		}
 	}
+}
+
+/**
+ * \brief Creates blocks inside an advanced recipe from any available finalized
+ * balls in the provided qc. When a new ball is inserted, it also checks if
+ * this new ball forms a repeating cycle.
+ * 
+ * \param[in] qc The \ref qc containing the finalized balls
+ * \param[out] recipe The \ref recipe_adv to insert the blocks into
+ * \param[in] type The type of nest to search for balls to be converted. 
+ *
+ * \returns True if the blocks inserted have formed a repeating cycle, and
+ * hence indicates the recipe has stabilized. False otherwise.
+ */
+int qc_create_and_insert_blocks_adv(QC *qc, RECIPE_ADV *recipe, int type, long int thresh_big_t, int thresh_cycle_len) {
+	int cycle, count;
+	long int big_t;
+	NEST *nest;
+	BALL *ball;
+	BLOCK *block, *block2;
+	OFFSET *offset;
+	LL_NODE *ll;
+	CDLL_NODE *current_ball, *n1, *n2, *node, *old_node;
+
+	nest = (type == PRIMAL) ? qc->nest_pr : qc->nest_du;
+
+	// Get the next available ball to be blockified
+	current_ball = nest->last_blocked_ball_cdlln->prev;
+	ball = (BALL *)current_ball->key;
+	assert(ball);
+
+	// Get big_t from the first ball we will be checking.
+	big_t = ball->big_t;
+	while (ball && ball->big_t == big_t) {
+		// Create and insert the block into the recipe in in the hash table
+		// (based on i,j,t coords) and the cdll.
+		block = qc_create_block_adv(recipe, ball);
+		ht_insert_key(recipe->block_ht, block->hash_ijt, block);
+		cdll_insert_tail(recipe->block_cdll, block, NULL);
+		cdll_insert_tail(recipe->block_arr[ball->i][ball->j], block, NULL);
+
+		// We want to find all other blocks identical to this one (in position
+		// and content). We do this because we want to traverse backward from
+		// each of these duplicates and compare each block along the way to see
+		// if we have a sequence that has repeated.
+		//
+		// A sequence has repeated if we travel from the new node to the old
+		// node and all of the blocks match. Think of this as comparing
+		// old_node to new_node, then old_node - 1 to new_node - 1, then
+		// old_node - 2 to new_node - 2, and so forth until new_node - x is the
+		// same position of old_node. We therefore have a cycle of length
+		// new_node - old_node.
+		cycle = FALSE;
+		node = recipe->block_cdll->prev->prev;
+		while (node != recipe->block_cdll) {
+			n1 = recipe->block_cdll->prev;
+			n2 = node;
+	
+			// Save where we started the comparison so we know when we have
+			// traversed the length of the section to be checked 
+			old_node = n2;
+
+			// Keep looping from the backwards from old_node and new_node and
+			// comparing the blocks along the way for equality. If either hits
+			// the head node of the sequence (key == NULL) then we can't have a
+			// repeating sequence.
+			count = 0;
+			while (n1->key != NULL && n2->key != NULL && qc_block_eq_adv((BLOCK *)n1->key, (BLOCK *)n2->key)) {
+				count++;
+				n1 = n1->prev;
+				n2 = n2->prev;
+
+				// If we have detected a cyclic sequence, then break. This is
+				// defined as a sequence of at least thresh_len nodes in
+				// length, and that we have balls of at least thresh_big_t
+				// considered before looking for a sequence. The sequence, as
+				// described above, exists if all nodes match when traversing
+				// backwards from old_node and new_node until new_node
+				// traversing pointer is equal to the starting position of the
+				// old node traversing pointer.
+				if (n1 == old_node) {
+					if (big_t >= thresh_big_t && count >= thresh_cycle_len) {
+						cycle = TRUE;
+					}
+					// We want to stop searching at this point whether a cycle
+					// is found or not as our search domain has ended.
+					break;
+				}
+			}
+
+			// If we have a cycle, we want to stop and break out of the loop.
+			if (cycle == TRUE) {
+				break;
+			}
+			node = node->prev;
+		}
+
+		nest->last_blocked_ball_cdlln = current_ball;
+
+		// If we have a cycle, we want to stop and break out of the loop.
+		if (cycle == TRUE) {
+			break;
+		}
+		current_ball = current_ball->prev;
+		ball = (BALL *)current_ball->key;
+	}
+
+	if (cycle) {
+		// Calculate the period of the recipe, that is, the time between the
+		// end of the recipe, and it's corresponding block the cycle before.
+		block = (BLOCK *)recipe->block_cdll->prev->key;
+		block2 = (BLOCK *)old_node->key;
+		recipe->cycle_period = block->t - block2->t;
+
+		// Calculate the t0 of the recipe. That is, the lowest time of any
+		// block in the cycling part of the recipe.
+		node = recipe->block_cdll->prev;
+		while (node != old_node) {
+			block = (BLOCK *)node->key;
+			if (block->t < recipe->cycle_t0) {
+				recipe->cycle_t0 = block->t;
+			}
+			node = node->prev;
+		}
+
+		// This is used to determine when to start using the cyclic region
+		recipe->cycle_end = recipe->block_cdll->prev;
+
+		// These values are mostly useful for printing the cyclic region of the
+		// recipe and aren't actually required.
+		recipe->cycle_begin = old_node->next;
+		recipe->cycle_len = count;
+
+		node = recipe->cycle_begin;
+		while (node != recipe->block_cdll) {
+			block = (BLOCK *)node->key;
+			if (block == NULL) {
+				continue;
+			}
+
+			ll = block->offsets;
+			while (ll != NULL) {
+				offset = (OFFSET *)ll->key;
+				if (offset->t != 0) {
+					ll = ll->next;
+					continue;
+				}
+
+				if (block->type == PRIMAL && offset->j == 0 && offset->wt < recipe->min_horz_wt_pr) {
+					recipe->min_horz_wt_pr = offset->wt;
+				}
+				if (block->type == DUAL && offset->i == 0 && offset->wt < recipe->min_horz_wt_du) {
+					recipe->min_horz_wt_du = offset->wt;
+				}
+
+				ll = ll->next;
+			}
+			node = node->next;
+		}
+
+		//qc_print_recipe_adv(recipe);	
+	}
+
+	return cycle;
 }
 
 /**
@@ -4021,6 +5960,22 @@ int qc_block_eq(BLOCK *b1, BLOCK *b2) {
 }
 
 /**
+ * \brief Compares two \link block Blocks\endlink for equality
+ *
+ * Differs from the regular equaltiy as advanced blocks are equal if their i &
+ * j coordinates match, as well as their offsets, rather than just their
+ * offsets.
+ * 
+ * \param[in] b1 The first \ref block to compare
+ * \param[in] b2 The second \ref block to compare
+ *
+ * \return 1 if b1 is equal to b2, 0 otherwise
+ */
+int qc_block_eq_adv(BLOCK *b1, BLOCK *b2) {
+	return b1->i == b2->i && b1->j == b2->j && ll_eq( b1->offsets, b2->offsets, qc_offset_eq_adv );
+}
+
+/**
  * \brief Frees a \ref block
  * 
  * \param[in] block The \ref block to be freed
@@ -4073,11 +6028,43 @@ OFFSET *qc_create_offset(int i, int j, long int big_t, double wt, int type) {
 	OFFSET *offset;
 
 	offset = (OFFSET *)my_malloc(sizeof(OFFSET));
+	offset->id = -1;
 	offset->i = i;
 	offset->j = j;
+	offset->t = LONG_MAX;
 	offset->big_t = big_t;
 	offset->wt = wt;
 	offset->type = type;
+	offset->hash_ijt = INT_MAX;
+
+	return offset;
+}
+
+/**
+ * \brief Create a new \ref offset, for an advanced recipe
+ * 
+ * \param[in] i The i coodinate of the \ref offset
+ * \param[in] j The j coordinate of the \ref offset
+ * \param[in] t The t of the \ref offset
+ * \param[in] big_t The big_t of the \ref offset
+ * \param[in] wt The weight of the \ref offset
+ * \param[in] type The type of the \ref offset
+ *
+ * \return The newly created \ref offset
+ */
+OFFSET *qc_create_offset_adv(int i, int j, long int t, double wt, int type) {
+	OFFSET *offset;
+
+	offset = (OFFSET *)my_malloc(sizeof(OFFSET));
+	offset->id = -1;
+	offset->i = i;
+	offset->j = j;
+	offset->t = t;
+	offset->big_t = LONG_MAX;
+	offset->wt = wt;
+	offset->type = type;
+
+	offset->hash_ijt = qc_hash_ijt(i, j, t);
 
 	return offset;
 }
@@ -4174,6 +6161,28 @@ OFFSET *qc_offset_lookup(LL_NODE *offset_head, OFFSET *offset) {
 }
 
 /**
+ * \brief Looks for an \ref offset in a \ref ht as used in advanced recipes
+ * 
+ * \param[in] ht The \ref ht to look up
+ * \param[in] hash  The hash of the key \ref offset to look for
+ * \param[in] offset The offset to look for
+ *
+ * \return The offset if found, otherwise NULL.
+ */
+OFFSET *qc_offset_lookup_adv(HT *ht, int hash, OFFSET *offset) {
+	DLL_NODE *node;
+
+	node = ht_hash_lookup(ht, hash);
+	while (node != NULL) {
+		if ( qc_offset_eq_adv((OFFSET *)node->key, offset) ) {
+			return (OFFSET *)node->key;
+		}
+		node = node->next;
+	}
+	return NULL;
+}
+
+/**
  * \brief Compares two \link offset Offsets\endlink for equality
  * 
  * \param[in] k1 The first \ref offset for comparison
@@ -4187,11 +6196,38 @@ int qc_offset_eq(void *k1, void *k2) {
 	if (k1 == NULL || k2 == NULL) {
 		return 0;
 	}
-	
+
 	n1 = (OFFSET *)k1;
 	n2 = (OFFSET *)k2;
 
 	if (n1->i == n2->i && n1->j == n2->j && n1->big_t == n2->big_t && n1->wt == n2->wt && n1->type == n2->type) {
+		return 1;
+	}
+	return 0;
+}
+
+/**
+ * \brief Compares two \link offset Offsets\endlink for equality as used by
+ * advanced recipes
+ *
+ * Differs from the regular comparison as it uses t rather than big_t.
+ * 
+ * \param[in] k1 The first \ref offset for comparison
+ * \param[in] k2 The second \ref offset for comparison
+ *
+ * \return 1 if the two are equal, 0 otherwise.
+ */
+int qc_offset_eq_adv(void *k1, void *k2) {
+	OFFSET *n1, *n2;
+
+	if (k1 == NULL || k2 == NULL) {
+		return 0;
+	}
+
+	n1 = (OFFSET *)k1;
+	n2 = (OFFSET *)k2;
+
+	if (n1->i == n2->i && n1->j == n2->j && n1->t == n2->t && n1->wt == n2->wt && n1->type == n2->type) {
 		return 1;
 	}
 	return 0;
@@ -4237,6 +6273,52 @@ int qc_offset_lt(void *k1, void *k2) {
 }
 
 /**
+ * \brief Compares two \link offset Offsets\endlink to see if the first is less
+ * than the second, as used by advanced recipes.
+ *
+ * Differs from the regular comparison as it uses t instead of big_t and also
+ * sorts based on the type of the offset.
+ * 
+ * \param[in] k1 The first \ref offset for comparison
+ * \param[in] k2 The second \ref offset for comparison
+ *
+ * \return 1 if k1 is less than k2, 0 otherwise.
+ */
+int qc_offset_lt_adv(void *k1, void *k2) {
+	OFFSET *n1, *n2;
+
+	n1 = (OFFSET *)k1;
+	n2 = (OFFSET *)k2;
+
+	if (k1 == NULL) {
+		return 0;
+	}
+	if (k2 == NULL) {
+		return 1;
+	}
+
+	if (n1->i < n2->i) {
+		return 1;
+	}
+	else if (n1->i == n2->i) {
+		if (n1->j < n2->j) {
+			return 1;
+		}
+		else if (n1->j == n2->j) {
+			if (n1->t < n2->t) {
+				return 1;
+			} else if (n1->t == n2->t) {
+				if (n1->type < n2->type) {
+					return 1;
+				}
+			}
+		}
+	}
+
+	return 0;
+}
+
+/**
  * \brief Frees an \ref offset
  * 
  * \param[in] offset The \ref offset to be freed
@@ -4274,6 +6356,27 @@ int qc_boot_up(QC *qc, RECIPE *recipe, int n, int m, long int switch_time) {
 		printf("Unsupported recipe type.\n");
 		exit(1);
 	}
+}
+
+/**
+ * \brief Bood up a \ref qc according to a \ref recipe_adv
+ * 
+ * \param[in] qc The \ref qc to boot up
+ * \param[in] recipe The \ref recipe_adv to use to boot up
+ * \param[in] thresh_big_t The minimum big_t that must pass before a cycle is considered. 
+ *
+ * \return 1 if a cycle has been detected, 0 otherwise.
+ */
+int qc_boot_up_adv(QC *qc, RECIPE_ADV *recipe, long int thresh_big_t, int thresh_cycle_len) {
+	int pr, du;
+
+	// Cannot do anything until there are finalized balls
+	if (qc->unfinalized_big_t <= 0) return 0;
+
+	du = qc_create_and_insert_blocks_adv(qc, recipe, DUAL, thresh_big_t, thresh_cycle_len);
+	pr = qc_create_and_insert_blocks_adv(qc, recipe, PRIMAL, thresh_big_t, thresh_cycle_len);
+
+	return (pr || du);
 }
 
 /**
@@ -4384,6 +6487,217 @@ int qc_boot_up_infinite(QC *qc, RECIPE *recipe, int n, int m, long int switch_ti
 // CONVERT FUNCTIONS
 
 /**
+ * \brief Takes a ball and returns a hash of its i, j, t coordinates
+ * 
+ * \param[in] ball The \ref ball to get the hash for
+ *
+ * \returns The 32-bit hash corresponding to the ball's position
+ */
+int qc_hash_ball(BALL *ball) {
+	return qc_hash_ijt(ball->i, ball->j, ball->t);
+}
+
+/**
+ * \brief Takes an i, j, t cordinate and returns a hash
+ * 
+ * \param[in] i The i coordinate
+ * \param[in] j The j coordinate
+ * \param[in] t The t coordinate
+ *
+ * \returns A 32-bit hash of the coordinate.
+ */
+int qc_hash_ijt(int i, int j, long int t) {
+	long int pos[3];
+
+	pos[0] = i;
+	pos[1] = j;
+	pos[2] = t;
+
+	return abs(fasthash32(pos, 3, 0));
+}
+
+/**
+ * \brief Gets the block for a given set
+ * 
+ * \param[in] qc The qc with the recipe 
+ * \param[in] set The set the block is required for 
+ */
+BLOCK *qc_get_block_for_set(QC *qc, SET *set) {
+	BLOCK *block, *block2;
+	RECIPE_ADV *recipe;
+	CDLL_NODE *node, *n;
+	int found, cycled;
+
+	recipe = qc->recipe_adv;
+	if (!recipe) return NULL;
+
+	node = recipe->block_arr[set->i][set->j];
+	if (node->next->key != NULL) {
+		node = node->next;
+		recipe->block_arr[set->i][set->j] = node;
+	} else {
+		// We want to start at the beginning of the cycle, then traverse down
+		// until the first occurence of a block at this position. 
+		found = FALSE;
+		n = qc->recipe_adv->cycle_begin;
+		while (n != qc->recipe_adv->block_cdll) {
+			block = (BLOCK *)n->key;
+			if (set->i == block->i && set->j == block->j) {
+				found = TRUE;
+				break;
+			}
+			n = n->next;
+		}
+		assert(found);
+		
+		// Once we have the block we want to move to, we need to find it in the
+		// block_arr cdll. We do this by looping forward from the current
+		// position. The justification for this, is that for long repeating
+		// cycles, this will be faster than going backwards (which would be
+		// faster for very short repeating cycles of 1 'layer' or so). 
+		found = FALSE;
+		cycled = FALSE;
+		while (cycled == FALSE) {
+			if (node->key == NULL) {
+				node = node->next;	
+				continue;
+			}
+			
+			block2 = (BLOCK *)node->key;
+			if (block == block2) {
+				found = TRUE;
+				break;
+			}
+
+			if (node == recipe->block_arr[set->i][set->j]) {
+				// This avoids an infinite loop in the case of an error. It
+				// should be impossible to actually loop the entire block_arr
+				// cdll and not find the block we are looking for.
+				if (!cycled) {
+					cycled = TRUE;
+				} else {
+					break;
+				}
+			}
+
+			node = node->next;
+		}
+		assert(found);
+
+		recipe->block_arr[set->i][set->j] = node;
+	}
+
+	return (BLOCK *)node->key;
+}
+
+/**
+ * \brief Converts a given block to a dot and respective lines using an
+ * advanced recipe. 
+ * 
+ * \param[in] qc The \ref qc to get the recipe from
+ * \param[out] matching The \ref matching to insert the dot and lines into
+ * \param[in] ball The \ref ball to convert to the dot
+ * \param[in] block The \ref block to use the offsets from to construct the
+ * lines 
+ */
+void qc_convert_block_to_dot_and_lines(QC *qc, MATCHING *matching, BALL *ball, BLOCK *block) {
+	DOT *dot1, *dot2;
+	OFFSET *o;
+	BALL *b;
+	LINE *line;
+	LL_NODE *node, *node2;
+	DLL_NODE *dnode;
+	CDLL_NODE *n;
+	int ii, jj, found;
+	long int tt;
+
+	assert(block != NULL);
+	assert(ball->dot == NULL);
+
+	// Note this is called before measurements, so we never want to insert a
+	// vertex right away.
+	dot1 = m_create_dot(ball, NULL);
+	ht_insert_key(matching->dot_ht, qc_hash_ball(ball), dot1);
+	if (matching->undo_flag == TRUE) {
+		n = cdll_create_node(dot1);
+		m_create_undo(matching, UNDO_CREATE_DOT, NULL, 0, NULL, NULL, n);	
+	}
+
+	assert(dot1);
+
+	// Loop over all the offsets eminating from the current block
+	node = block->offsets;
+	while (node != NULL) {
+		o = (OFFSET *)node->key;
+
+		// If the offset is a boundary, use the user defined get_boundary
+		// function inside qc to find the relevant dot.
+		if (o->type == PRIMAL_BOUNDARY || o->type == DUAL_BOUNDARY) {
+			b = qc->get_boundary(o->i, o->j, o->big_t, o->type, qc->boundaries);
+			assert(b != NULL);
+			if (b->dot == NULL) {
+				dot2 = m_create_and_insert_dot_and_vertex(matching, b);
+			} else {
+				dot2 = b->dot;
+			}
+			found = TRUE;
+		}
+
+		// Connect to a dot in the current time layer or the previous depending
+		// on the offset big_t.
+		else {
+			ii = ball->i + o->i;
+			jj = ball->j + o->j;
+			tt = ball->t + o->t;
+
+			found = FALSE;
+			dnode = ht_hash_lookup(matching->dot_ht, qc_hash_ijt(ii, jj, tt));
+			while (dnode != NULL) {
+				dot2 = (DOT *)dnode->key;
+				if (dot2->i == ii && dot2->j == jj && dot2->little_t == tt) {
+					while (dot2->merge != NULL) {
+						dot2 = dot2->merge;
+					}
+					found = TRUE;
+					break;
+				}
+				dnode = dnode->next;
+			}
+		}
+
+		// If the destination doesn't exist, then we don't want to use this
+		// offset to create a new line
+		if (!found) {
+			node = node->next;
+			continue;
+		}
+
+		// Check to see if the line already exists from the destination dot.
+		// Note: This code never actually appears to succeed...
+		found = FALSE;
+		node2 = dot2->lines;
+		while (node2 != NULL) {
+			line = (LINE *)node2->key;
+
+			// If the line exists, skip to the next offset
+			if ((line->a == dot1) || (line->b == dot1)) {
+				node2 = node2->next;
+				found = TRUE;
+				break;
+			}
+			node2 = node2->next;
+		}
+
+		if (!found) {
+			// If the line doesn't exist, create it.
+			m_create_line_wt(matching, dot1, dot2, o->wt - o->wt%2);
+		}
+		
+		node = node->next;
+	}
+}
+
+/**
  * \brief Converts balls to dots 
  * 
  * \param[in] qc The \ref qc containing the recipe to use 
@@ -4485,7 +6799,7 @@ void qc_convert_offsets_to_lines(QC *qc, MATCHING *matching, NEST *nest, CDLL_NO
 			if (o->type == PRIMAL_BOUNDARY || o->type == DUAL_BOUNDARY) {
 				b = qc->get_boundary(o->i, o->j, o->big_t, o->type, qc->boundaries);
 				if (b == NULL) {
-					qc_print_offset((void *)o);
+					//qc_print_offset((void *)o);
 					assert(b != NULL);
 				}
 				if (b->dot == NULL) {
@@ -4652,6 +6966,14 @@ void qc_iden_transform_error(__attribute__((unused)) ERROR *error) {
 }
 
 /**
+ * \brief Transforms an \ref error from a loss gate. Does nothing.
+ *
+ * \param[in] error The \ref error to transform
+ */
+void qc_loss_transform_error(__attribute__((unused)) ERROR *error) {
+}
+
+/**
  * \brief Transforms an \ref error from an H gate. Converts an X error to a Z error and vica versa. 
  *
  * \param[in] error The \ref error to transform
@@ -4737,6 +7059,16 @@ void qc_TX_transform_error(ERROR *error) {
  * \param[in] op2 The error operator from qubit 2
  */
 void qc_cnot_transform_errors(int *op1, int *op2) {
+	if (*op1 & L || *op2 & L) {
+		assert(!(*op1 & L && *op2 & L));
+		if (*op1 & L) {
+			*op2 ^= Y;
+		} else if (*op2 & L) {
+			*op1 ^= Y;
+		}
+		return;
+	}
+
 	if (*op1 & X) {
 		*op2 ^= X;
 	}
@@ -4821,7 +7153,7 @@ void qc_print_qubit(QUBIT *q) {
 	int i;
 	CDLL_NODE *n;
 
-	printf("qubit t: %ld, e: %d, num_errors: %d\n", q->t, q->e, q->num_errors);
+	printf("qubit i: %d, j: %d, k: %d, t: %ld, e: %d, num_errors: %d\n", q->i, q->j, q->k, q->t, q->e, q->num_errors);
 
 	n = q->error_cdll->next;
 	for (i = 0; i < q->num_errors; i++) {
@@ -4960,11 +7292,19 @@ void qc_print_set(SET *set) {
 
 	// If the set is a boundary
 	else if (set->bdy == NULL) {
-		printf("type: %d, i: %d, j: %d, num_meas_left: %d, bdy: N\n", set->type, set->i, set->j, set->num_meas_left);
+		printf("type: %d, %p, i: %d, j: %d, big_t: %ld, t: %ld, num_meas_left: %d, bdy: N\n", set->type, set, set->i, set->j, set->big_t, set->t, set->num_meas_left);
 	}
 	
 	else {
-		printf("type: %d, i: %d, j: %d, num_meas_left: %d, bdy: %d\n", set->type, set->i, set->j, set->num_meas_left, set->bdy->ball->i);
+		printf("type: %d, %p, i: %d, j: %d, big_t: %ld, t: %ld, num_meas_left: %d, bdy: %d\n", set->type, set, set->i, set->j, set->big_t, set->t, set->num_meas_left, set->bdy->ball->i);
+	}
+
+	if (set->ball) {
+		printf("ball: mp: %d\n", set->ball->mp);
+	}
+
+	if (set->set_pos_cdll) {
+		cdll_print(set->set_pos_cdll, qc_print_void_set_pos);
 	}
 }
 
@@ -4976,6 +7316,13 @@ void qc_print_set(SET *set) {
  */
 void qc_print_void_set(void *key) {
 	qc_print_set((SET *)key);
+}
+
+void qc_print_void_set_pos(void *key) {
+	SET_POS *sp;
+	
+	sp = ((SET_POS *)key);
+	printf("SetPos: %d %d %d\n", sp->i, sp->j, sp->lay);
 }
 
 /**
@@ -5055,7 +7402,7 @@ void qc_print_ball(BALL *ball) {
 	DLL_NODE *n;
 	STICK *stick;
 
-	printf("(%d, %d, %ld) mp: %d - ", ball->i, ball->j, ball->big_t, ball->mp);
+	printf("%p [%p] (%d, %d, %ld, %ld, %p) (%ld) mp: %d - ", ball, ball->copy, ball->i, ball->j, ball->t, ball->big_t, ball->dot, ball->big_t, ball->mp);
 
 	ht = ball->stick_ht;
 	for (i=0; i<ht->length; i++) {
@@ -5206,7 +7553,7 @@ void qc_print_offset(void *k) {
 	OFFSET *o;
 
 	o = (OFFSET *)k;
-	printf("id = %d, i = %d, j = %d, big_t = %ld, wt = %d, type=%d\n", o->id, o->i, o->j, o->big_t, o->wt, o->type);
+	printf("id = %d, i = %d, j = %d, t = %ld, big_t = %ld, wt = %d, type=%d\n", o->id, o->i, o->j, o->t, o->big_t, o->wt, o->type);
 }
 
 /**
@@ -5216,7 +7563,7 @@ void qc_print_offset(void *k) {
  * \param block The \ref block to be printed.
  */
 void qc_print_block(BLOCK *block) {
-	printf("Block ID #%d\n", ((BLOCK *)block)->id);
+	printf("Block %d,%d,%ld\n", ((BLOCK *)block)->i, ((BLOCK *)block)->j, ((BLOCK *)block)->t);
 	ll_print(((BLOCK *)block)->offsets, qc_print_offset);
 }
 
@@ -5311,5 +7658,44 @@ void qc_print_recipe(RECIPE *recipe) {
 	}
 
 	printf("p %d d %d pb %d db %d\n", p, d, pb, db);
+}
+
+/**
+ * \ingroup recipe_adv
+ * \brief Prints a \ref recipe_adv
+ *
+ * \param[in] recipe The advanced recipe to be printed 
+ */
+void qc_print_recipe_adv(RECIPE_ADV *recipe) {
+	CDLL_NODE *node;
+	LL_NODE *lln;
+	BLOCK *block;
+
+	printf("Type: %d\n", recipe->type);
+	printf("Length: %d\n", recipe->cycle_len);
+	printf("In Cycle? %d\n", recipe->in_cycle);
+	printf("Cycle t0: %ld\n", recipe->cycle_t0);
+	printf("Cycle Period: %ld\n", recipe->cycle_period);
+
+	node = recipe->block_cdll->next;
+	while (node != recipe->block_cdll) {
+		block = (BLOCK *)node->key;
+		if (node == recipe->cycle_begin) {
+			printf("** CYCLE START **\n");
+		}
+
+		printf("BLOCK (type: %d) (%d, %d, %ld, %ld)\n", block->type, block->i, block->j, block->t, block->big_t);
+		lln = block->offsets;
+		while (lln != NULL) {
+			qc_print_offset(lln->key);
+			lln = lln->next;
+		}
+		
+		if (node == recipe->cycle_end) {
+			printf("** CYCLE END **\n");
+			break;
+		}
+		node = node->next;
+	}
 }
 

@@ -296,3 +296,17 @@ CDLL_NODE *cdll_copy(CDLL_NODE *sent, void *(*copy_key)(void *), void (*set_key_
 
 	return sent2;
 }
+
+int cdll_length(CDLL_NODE *sent) {
+	CDLL_NODE *n;
+	int count;
+
+	count = 0;
+	n = sent->prev;
+	while (n != sent) {
+		count++;
+		n = n->prev;
+	}
+
+	return count;
+}

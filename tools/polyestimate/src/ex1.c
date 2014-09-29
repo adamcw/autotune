@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "polyestimate/polyestimate.h"
+#include "my_time/my_time.h"
 
 int main(int argc, char **argv) {
 	int i; // loop variable

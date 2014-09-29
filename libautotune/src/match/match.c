@@ -3,6 +3,9 @@
 #include "match.h"
 #include "../memory/memory.h"
 #include "../bfs/bfs.h"
+#include "../fast_hash/fasthash.h"
+
+#define MATCHING_DOT_HASH_SIZE 15485863
 
 /**
  * \brief Creates a new \ref matching 
@@ -36,6 +39,8 @@ MATCHING *m_create_matching(int t_delete) {
 	// lattice
 	matching->dots = cdll_create();
 	matching->lines = cdll_create();
+	matching->dot_ht = ht_create(MATCHING_DOT_HASH_SIZE);
+	//matching->line_ht = ht_create(MATCHING_DOT_HASH_SIZE);
 
 	// lattice and graph statistics
 	matching->num_dots = 0;
@@ -47,6 +52,7 @@ MATCHING *m_create_matching(int t_delete) {
 	// time variables
 	matching->t = 0;
 	matching->t_delete = t_delete;
+	matching->t_delay = 0;
 
 	return matching;
 }
@@ -57,8 +63,38 @@ MATCHING *m_create_matching(int t_delete) {
  * \param[in] matching The \ref matching to be freed
  */
 void m_free_matching(MATCHING *matching) {
+	CDLL_NODE *n;
+	BFS_VERTEX *bfsv1;
+	DOT *a;
+
 	if (matching == NULL) {
 		return;
+	}
+ 
+	// Free any straggling temporal boundaries
+	n = matching->g->vertex_ll->next;
+	while (n != matching->g->vertex_ll) {
+		bfsv1 = (BFS_VERTEX *)n->key;
+		n = n->next;
+		// We only care about the vertices that are temporal boundaries
+		a = (DOT *)bfsv1->key;
+		if (a->v && a->v->t == -INT_MAX) {
+			m_delete_vertex(matching, a->v);
+			m_free_dot(a);
+		}
+	}
+
+	// Free any straggling temporal boundaries
+	n = matching->g->vertex_ll->next;
+	while (n != matching->g->vertex_ll) {
+		bfsv1 = (BFS_VERTEX *)n->key;
+		n = n->next;
+		// We only care about the vertices that are temporal boundaries
+		a = (DOT *)bfsv1->key;
+		if (a->v && a->v->t == -INT_MAX) {
+			m_delete_vertex(matching, a->v);
+			m_free_dot(a);
+		}
 	}
 
 	cdll_free(matching->graph, m_fast_delete_void_vertex);
@@ -66,6 +102,9 @@ void m_free_matching(MATCHING *matching) {
 
 	cdll_free(matching->dots, m_free_void_dot);
 	cdll_free(matching->lines, free);
+
+	ht_free(matching->dot_ht, NULL);
+	//ht_free(matching->line_ht, NULL);
 	
 	bfs_free_graph(matching->g);
 
@@ -102,29 +141,39 @@ void m_update_dots_and_lines_into_bfs(MATCHING *matching, BFS_GRAPH *g, int undo
 	CDLL_NODE *node;
 	BFS_EDGE *e;
 	BFS_VERTEX *v;
+	long int latest_t;
 
 	// Insert the dots into the BFS
 	v_num = g->num_vertices;
 	node = matching->dots->next;
+	latest_t = matching->t_bfs;
 	while (node != matching->dots) {
 		a = (DOT *)node->key;
 
-		//printf("%d, %d, %ld | %ld, %ld\n", a->i, a->i, a->t, matching->t, matching->t_bfs);
+		//printf("%d, %d, %ld, %p | %ld, %ld\n", a->i, a->j, a->t, a, matching->t, matching->t_bfs);
 
 		if (a->t < matching->t_bfs) {
 			break;
 		}
 
+		if (a->t > latest_t) {
+			latest_t = a->t;
+		}
+
 		// If the dot already has a BFS associated, then it's likely that the
 		// BFS wasn't cleared properly from previous rounds.
 		if (a->bfs != NULL) {
+			node = node->next;
+			//printf("--%d, %d, %ld | %ld, %ld\n", a->i, a->j, a->t, matching->t, matching->t_bfs);
+			continue;
+
 			bfs_remove_vertex(g, a->bfs);
-			//printf("%d, %d, %ld | %ld, %ld\n", a->i, a->i, a->t, matching->t, matching->t_bfs);
 			//printf("Dot already allocated to BFS.\n");
 			//assert(a->bfs == NULL);
 		}
 		
-		//printf("%d, %d, %ld | %ld, %ld\n", a->i, a->i, a->t, matching->t, matching->t_bfs);
+		//printf("+-+ %d, %d, %ld, %p | %ld, %ld\n", a->i, a->j, a->t, a, matching->t, matching->t_bfs);
+
 		v = bfs_create_vertex(v_num++, a);
 		a->bfs = v;
 		bfs_insert_vertex(g, v);
@@ -139,9 +188,17 @@ void m_update_dots_and_lines_into_bfs(MATCHING *matching, BFS_GRAPH *g, int undo
 		a = line->a;
 		b = line->b;
 
-		//printf("%d, %d, %ld | %d, %d, %ld | %ld, %ld\n", a->i, a->j, a->t, b->i, b->j, b->t, matching->t, matching->t_bfs);
-		
-		if (a->t < matching->t_bfs) {
+		if (line->a->t == LONG_MAX || line->b->t == LONG_MAX) {
+			node = node->next;
+			continue;
+		}
+
+		if ((line->a->t >= 0 && !line->a->bfs) || (line->b->t >= 0 && !line->b->bfs) ) {	
+			node = node->next;
+			continue;
+		}
+
+		if (a->t <= matching->t_bfs) {
 			break;
 		}
 
@@ -152,10 +209,24 @@ void m_update_dots_and_lines_into_bfs(MATCHING *matching, BFS_GRAPH *g, int undo
 			continue;
 		}
 
+		while (b->merge != NULL) {
+			b = b->merge;
+		}
+
 		// Boundaries do not appear in the vertices list, and therefore have
 		// not yet been allocated to the BFS until they are encountered the
 		// first time from a line. 
 		if (b->bfs == NULL) {
+			// Find a nicer way to do this. When a ball has a line into a
+			// ball that has merged into the future, the destination might not
+			// exist.
+			if (b->ball->type != PRIMAL_BOUNDARY && b->ball->type != DUAL_BOUNDARY) {
+
+				node = node->next;
+				continue;
+			}
+			assert(b->ball->type == PRIMAL_BOUNDARY || b->ball->type == DUAL_BOUNDARY);
+
 			v = bfs_create_vertex(b->v->v_num, b);
 			b->bfs = v;
 			bfs_insert_vertex(g, v);
@@ -168,12 +239,11 @@ void m_update_dots_and_lines_into_bfs(MATCHING *matching, BFS_GRAPH *g, int undo
 	}
 
 	if (undo == TRUE) {
-		//printf("Setting undo point to: %d\n", matching->t_bfs);
 		m_create_undo(matching, UNDO_UPDATE_T_BFS, NULL, matching->t_bfs, NULL, NULL, NULL);
 	}
 
 	//printf("Update t_bfs: %d --> %d\n", matching->t_bfs, matching->t);
-	matching->t_bfs = matching->t;
+	matching->t_bfs = latest_t;
 }
 
 /**
@@ -205,13 +275,16 @@ void m_free_dots_and_lines_bfs(BFS_GRAPH *g) {
  */
 BLOSSOMV *m_create_blossomv(int num_vertices) {
 	BLOSSOMV *bv;
+
 	bv = (BLOSSOMV *)my_malloc(sizeof(BLOSSOMV));
 	bv->alloc_edges = 8;
 
 	bv->num_edges = 0;
+	// We need twice as many vertices because each vertex will have an
+	// accompanying boundary vertex
 	bv->num_vertices = 2 * num_vertices;
 	bv->edges = (int *)my_malloc(sizeof(int) * 2 * bv->alloc_edges);
-    bv->weights = (int *)my_malloc(sizeof(int) * bv->alloc_edges);	
+	bv->weights = (int *)my_malloc(sizeof(int) * bv->alloc_edges);	
 	bv->vertices = (VERTEX **)my_malloc(sizeof(VERTEX *) * bv->num_vertices);
 
 	return bv;
@@ -242,6 +315,7 @@ int m_add_vertex_to_blossomv(BLOSSOMV *bv, VERTEX *v, int pos) {
 	if (pos < 0) {
 		pos = (bv->num_vertices / 2) - pos - 1;
 	}
+	//m_print_void_vertex(v);
 	//printf("%d into %d\n", pos, bv->num_vertices);
 	bv->vertices[pos] = v;
 	return pos;
@@ -344,9 +418,15 @@ void m_solve(MATCHING *matching, BLOSSOMV *bv) {
 	
 	// Initialise the BlossomV Perfect Matching
 	//printf("num_vertices: %d, num_edges: %d\n", bv->num_vertices, bv->num_edges);
+	if (bv->num_vertices > 0 && bv->num_edges < bv->num_vertices / 2) {
+		m_print_graph(matching);
+		m_print_lattice(matching);
+		assert(bv->num_vertices == 0 || bv->num_edges >= bv->num_vertices / 2);
+	}
 	
 	matching->pm = new PerfectMatching(bv->num_vertices, bv->num_edges);
 	options.verbose = false;
+	options.fractional_jumpstart = true;
 	matching->pm->options = options;
 
 	// You can technically feed these in backwards, but this will break the
@@ -357,11 +437,18 @@ void m_solve(MATCHING *matching, BLOSSOMV *bv) {
 	// order, or if it is on the vertex numbering. Hence, it wasn't worth the
 	// continued effort to implement reverse order edges before I know if it'll
 	// actually do anything.
+	//printf("%d %d\n", bv->num_vertices, bv->num_edges);
 	for (i = 0; i < bv->num_edges; i++) {
 		matching->pm->AddEdge(bv->edges[2*i], bv->edges[2*i+1], bv->weights[i]);
 	}
 
 	matching->pm->Solve();
+
+	//double cost = ComputePerfectMatchingCost(bv->num_vertices, bv->num_edges, bv->edges, bv->weights, matching->pm);
+	//printf("%d %d cost = %.1f\n", bv->num_vertices, bv->num_edges, cost);
+
+	//m_print_graph(matching);
+	//m_print_lattice(matching);
 }
 
 /**
@@ -387,7 +474,6 @@ void m_create_augmented_edges(MATCHING *matching, BLOSSOMV *bv, int undo) {
 	// a hash table, this still requires a loop of the edges to create, and
 	// it's not readily apparent how you could keep these hash tables from
 	// round to round given that NodeIds change every round.
-	
 
 	for (i = 0; i < bv->num_edges; i++) {
 		if (matching->pm->GetSolution(i) == 1) {
@@ -398,7 +484,11 @@ void m_create_augmented_edges(MATCHING *matching, BLOSSOMV *bv, int undo) {
 				if (v1->matched_edge && v1->matched_edge->dest_vertex == v2) {
 					continue;
 				}
-	
+
+				if ((v1->t > matching->t - matching->t_delay && v1->v_num >= 0) || (v2->t > matching->t - matching->t_delay && v2->v_num >= 0)) {
+					continue;
+				}
+
 				// Delete the old matched edge
 				if (v1->matched_edge) {
 					assert(v1->matched_edge->source_vertex == v1);
@@ -482,15 +572,15 @@ void m_mwpm(MATCHING *matching, int undo) {
 	BLOSSOMV *bv;
 	BFS_VERTEX *bfsv1;
 
-	//printf("\nm_mwpm()\n");
+	//m_print_graph(matching);
+
+	//printf("\nm_mwpm(): %d\n", matching->t);
+	//printf("num_dots: %d\n", matching->num_dots);
 
 	// We want to build a BFS graph of the dots and lines, such that we can
 	// traverse the lattice. We will traverse the graph from each dot with a
 	// vertex, and look for each other dot with a vertex at it, and construct
 	// an edge between them.
-
-	// Update the BFS graph
-	m_update_dots_and_lines_into_bfs(matching, matching->g, undo);
 
 	// If there are no vertices in the graph, then do nothing
 	node = matching->graph->prev;
@@ -500,7 +590,7 @@ void m_mwpm(MATCHING *matching, int undo) {
 
 	if (matching->graph->next == matching->last_graph_head && matching->graph->prev == matching->last_graph_tail) {
 		//printf("skipping!\n");
-		return;
+		//return;
 	}
 
 	if (undo) {
@@ -519,17 +609,21 @@ void m_mwpm(MATCHING *matching, int undo) {
 	// Loop over the vertices in the matching and perform a BFS from each
 	// connecting each to one another.
 	offset = ((VERTEX *)node->key)->v_num; 
+
 	while (node != matching->graph) {
 		v1 = (VERTEX *)node->key;
 		a = v1->dot;
+		assert(a->bfs != NULL);
 
-		// Vertices need to strt at 0 for Blossom V. Since we have likely
+		// Vertices need to start at 0 for Blossom V. Since we have likely
 		// trimmed with t_delete, we need to offset the v_nums to start at 0.
 		v_num = a->v->v_num - offset;
 
 		// Boundaries need to start at -1, since -0 is 0 and hence wouldn't be
 		// identified as a boundary. 
 		bdy_num = -(v_num + 1);
+
+		//printf("v_num: %d, bdy_num: %d\n", v_num, bdy_num);
 
 		v_num1 = m_add_vertex_to_blossomv(bv, a->v, v_num);
 
@@ -542,6 +636,8 @@ void m_mwpm(MATCHING *matching, int undo) {
 			bfsv1 = bfs_get_next_v(matching->g);
 			while (bfsv1 != NULL) {
 				b = (DOT *)bfsv1->key;
+				//printf("Inner Dot: ");
+				//m_print_dot(b);
 
 				// Keep looking for edges until we have found edges that are
 				// longer than the minimum path between the boundaries. After
@@ -549,7 +645,6 @@ void m_mwpm(MATCHING *matching, int undo) {
 				// as it would be 'cheaper' to connect each vertex to their
 				// respective boundaries.
 				if (bfsv1->d > matching->D) {
-					//printf("%d, %d\n", bfsv1->d, matching->D);
 					break;
 				}
 
@@ -596,7 +691,6 @@ void m_mwpm(MATCHING *matching, int undo) {
 						continue;
 					}
 
-					//print_void_vertex(b->v);
 					found_bdy = TRUE;
 					v_num2 = m_add_vertex_to_blossomv(bv, b->v, bdy_num);
 				}
@@ -622,7 +716,11 @@ void m_mwpm(MATCHING *matching, int undo) {
 	// Create the augmented edges from the solution
 	m_create_augmented_edges(matching, bv, undo);
 
-	//print_graph(matching);
+	//if (matching->augmented_edges->next != matching->augmented_edges) {
+		//m_print_augmented_edges(matching);
+		//m_print_graph(matching);
+		//m_print_lattice(matching);
+	//}
 
 	delete matching->pm;
 	m_free_blossomv(bv);
@@ -635,16 +733,19 @@ void m_mwpm(MATCHING *matching, int undo) {
  * \param[in,out] m The \ref matching to trim.
  */
 int m_time_delete(MATCHING *m) {
-	long int t, v_del;
-	CDLL_NODE *n;
+	long int t, t2, v_del;
+	CDLL_NODE *n, *n2;
 	DOT *dot;
 	LINE *line;
 	VERTEX *v, *v2;
 	DOT *a, *b;
 	BFS_VERTEX *bfsv1, *bfsv2;
 	BFS_EDGE *bfse;
+	int hash;
+	long int pos[3];
 
 	t = m->t - m->t_delete;
+	t2 = t - m->t_delete;
 
 	// Delete all temporal boundaries that will have their paired vertex
 	// deleted by time delete. 
@@ -652,6 +753,7 @@ int m_time_delete(MATCHING *m) {
 	// Temporal boundaries do not exist in the graph, only in the BFS
 	// structure. They could be found by looping each vertex and looking over
 	// the BFS_EDGEs, however this would be less efficient.
+
 	n = m->g->vertex_ll->next;
 	while (n != m->g->vertex_ll) {
 		bfsv1 = (BFS_VERTEX *)n->key;
@@ -699,7 +801,7 @@ int m_time_delete(MATCHING *m) {
 		// results.
 		if (v->matched_edge) {
 			v2 = v->matched_edge->dest_vertex;
-			if (v2->t >= t) {
+			if (v2->t >= t && v2->v_num >= 0) {
 				a = v2->dot;
 				b = m_create_temporal_boundary();
 				m_create_and_insert_vertex_and_edge_into_bfs(m->g, a, b, 0);
@@ -717,33 +819,51 @@ int m_time_delete(MATCHING *m) {
 		m_delete_vertex(m, v);
 	}
 
-	// Delete all lines that are less than t in the past.
+	// Delete all lines that are less than t2 in the past.
 	n = m->lines->prev;
 	while (n != m->lines) {
+		n2 = n->prev;
 		line = (LINE *)n->key;
-		if (line->a->t >= t && line->b->t >= t) {
-			break;
-		}
+		a = line->a;
+		b = line->b;
 
-		cdll_delete_node(n, free);
-		
-		n = m->lines->prev;
+		if (line->a->t < t2 || line->b->t < t2) {
+			// We don't want to delete boundary lines until the source vertex
+			// is past t_delete. Boundaries actually have low t value rather
+			// than LONG MAX. This rarely has an impact, since this will only
+			// delete the boundary lines close to the time boundary within a
+			// small range.
+			if (line->a->t >= t2 && line->b->v && line->b->v->v_num < 0) {
+
+				n = n2;	
+				continue;
+			}
+
+			cdll_delete_node(n, free);
+		}
+		n = n2;	
 	}
 
 	// Delete all dots that are less than t in the past.
 	n = m->dots->prev;
 	while (n != m->dots) {
 		dot = (DOT *)n->key;
-		if (dot == NULL || dot->t >= t) {
+		if (dot == NULL || dot->t >= t2) {
 			break;
 		}
 		
 		if (dot->bfs != NULL) {
 			bfs_remove_vertex(m->g, dot->bfs);
 		}
+			
+		pos[0] = dot->i;
+		pos[1] = dot->j;
+		pos[2] = dot->little_t;
+		hash = abs(fasthash32(pos, 3, 0));
+		ht_delete_key(m->dot_ht, hash, dot, NULL);
 
 		cdll_delete_node(n, m_free_void_dot);
-			
+
 		n = m->dots->prev;
 	}
 
@@ -772,7 +892,6 @@ AUG_EDGE *m_get_aug_edge(MATCHING *m) {
  * \param[in] ae The augmented edge to delete
  */
 void m_delete_aug_edge(AUG_EDGE *ae) {
-	//printf("Deleting augmented edge\n");
 	cdll_delete_node(ae->n, free);
 }
 
@@ -794,11 +913,15 @@ DOT *m_create_dot(BALL *ball, VERTEX *v) {
 		dot->i = ball->i;
 		dot->j = ball->j;
 		dot->t = ball->big_t;
+		dot->little_t = ball->t;
 	} else {
 		dot->i = -1;
 		dot->j = -1;
 		dot->t = -1;
+		dot->little_t = -1;
 	}
+
+	dot->merge = NULL;
 
 	dot->lines = NULL;
 	dot->bfs = NULL;
@@ -849,6 +972,9 @@ DOT *m_create_and_insert_dot(MATCHING *m, BALL *ball) {
 	n = cdll_create_node(dot);
 	cdll_insert_node_head(m->dots, n);
 	m->num_dots++;
+
+	ht_insert_key(m->dot_ht, ball->hash_ijt, dot);
+
 	if (m->undo_flag == TRUE) {
 		m_create_undo(m, UNDO_CREATE_AND_INSERT_DOT, NULL, 0, NULL, NULL, n);	
 	}
@@ -868,7 +994,6 @@ DOT *m_create_and_insert_dot_and_vertex(MATCHING *m, BALL *ball) {
 	CDLL_NODE *n;
 	
 	dot = m_create_dot(ball, NULL);
-	//printf("creating vertex (%d, %d, %ld)\n", dot->i, dot->j, dot->t);
 	
 	if (ball->type != PRIMAL_BOUNDARY && ball->type != DUAL_BOUNDARY) {
 		n = cdll_create_node(dot);
@@ -877,6 +1002,7 @@ DOT *m_create_and_insert_dot_and_vertex(MATCHING *m, BALL *ball) {
 		if (m->undo_flag == TRUE) {
 			m_create_undo(m, UNDO_CREATE_AND_INSERT_DOT, NULL, 0, NULL, NULL, n);
 		}
+		ht_insert_key(m->dot_ht, ball->hash_ijt, dot);
 	}
 
 	v = m_create_vertex(ball->i, ball->j, ball->big_t, dot);
@@ -978,6 +1104,57 @@ LINE *m_create_and_insert_line(MATCHING *m, DOT *da, DOT *db, float p_stick) {
 	return line;
 }
 
+LINE *m_create_line_wt(MATCHING *m, DOT *da, DOT *db, int wt) {
+	LINE *line;
+	CDLL_NODE *n;
+
+	line = (LINE *)my_malloc(sizeof(LINE));
+	line->a = da;
+	line->b = db;
+	line->wt = wt;
+
+	assert(da->v == NULL || da->v->v_num >= 0);
+	da->lines = ll_insert(da->lines, line);		
+
+	if (db->v == NULL || db->v->v_num >= 0) {
+		db->lines = ll_insert(db->lines, line);
+	}
+
+	if (m->undo_flag == TRUE) {
+		n = cdll_create_node(line);
+		m_create_undo(m, UNDO_CREATE_LINE, NULL, 0, NULL, NULL, n);
+	}
+
+	return line;
+}
+
+void m_insert_line(MATCHING *m, LINE *line) {
+	CDLL_NODE *n, *x;
+	LINE *l;
+	assert(line->a->t != LONG_MAX);
+	assert(line->b->t != LONG_MAX);
+
+	x = m->lines->next;
+	n = cdll_create_node(line);
+	while (x != m->lines) {
+		l = (LINE *)x->key;
+		if (l->a->t <= line->a->t) {
+			break;
+		}
+		x = x->next;
+	}
+
+	n->next = x;
+	n->prev = x->prev;
+	x->prev->next = n;
+	x->prev = n;
+
+	if (m->undo_flag == TRUE) {
+		m_create_undo(m, UNDO_INSERT_LINE, NULL, 0, NULL, NULL, n);
+	}
+	m->num_lines++;
+}
+
 /**
  * \brief Creates and inserts a line using a weight
  * 
@@ -992,27 +1169,9 @@ LINE *m_create_and_insert_line(MATCHING *m, DOT *da, DOT *db, float p_stick) {
  */
 LINE *m_create_and_insert_line_wt(MATCHING *m, DOT *da, DOT *db, int wt) {
 	LINE *line;
-	CDLL_NODE *n;
 
-	line = (LINE *)my_malloc(sizeof(LINE));
-	line->a = da;
-	line->b = db;
-	line->wt = wt;
-
-	assert(da->v == NULL || da->v->v_num >= 0);
-	da->lines = ll_insert(da->lines, line);		
-	
-	// Check that destination dot is not a boundary dot. 
-	if (db->v == NULL || db->v->v_num >= 0) {
-		db->lines = ll_insert(db->lines, line);
-	}
-
-	n = cdll_create_node(line);
-	cdll_insert_node_head(m->lines, n);
-	if (m->undo_flag == TRUE) {
-		m_create_undo(m, UNDO_CREATE_AND_INSERT_LINE, NULL, 0, NULL, NULL, n);
-	}
-	m->num_lines++;
+	line = m_create_line_wt(m, da, db, wt);
+	m_insert_line(m, line);
 
 	return line;
 }
@@ -1177,7 +1336,7 @@ void m_delete_only_edge(EDGE *e) {
  * \param[in] v2 A \ref vertex (NULL if not required)
  * \param[in] n A ::CDLL_NODE (NULL if not required) 
  */
-void m_create_undo(MATCHING *matching, int type, VERTEX *v, int inc, EDGE *e, VERTEX *v2, CDLL_NODE *n) {
+void m_create_undo(MATCHING *matching, int type, VERTEX *v, long int inc, EDGE *e, VERTEX *v2, CDLL_NODE *n) {
 	UNDO *ut;
 	ut = (UNDO *)my_malloc(sizeof(UNDO));
 
@@ -1187,10 +1346,34 @@ void m_create_undo(MATCHING *matching, int type, VERTEX *v, int inc, EDGE *e, VE
 	ut->e = e;
 	ut->v2 = v2;
 	ut->n = n;
+	ut->d1 = NULL;
+	ut->d2 = NULL;
+	ut->line = NULL;
+	ut->t = LONG_MAX;
 
 	ut->next = matching->u;
 	matching->u = ut;
 }
+
+void m_create_line_undo(MATCHING *matching, int type, LINE *line, DOT *d1, DOT *d2, int wt, long int t) {
+	UNDO *ut;
+	ut = (UNDO *)my_malloc(sizeof(UNDO));
+
+	ut->type = type;
+	ut->v = NULL;
+	ut->inc = wt;
+	ut->e = NULL;
+	ut->v2 = NULL;
+	ut->n = NULL;
+	ut->d1 = d1;
+	ut->d2 = d2;
+	ut->line = line;
+	ut->t = t;
+
+	ut->next = matching->u;
+	matching->u = ut;
+}
+
 
 /**
  * \brief Executes and deletes the \ref undo%s
@@ -1203,6 +1386,8 @@ void m_execute_and_delete_undos(MATCHING *matching) {
 	LINE *line;
 	DOT *dot;
 	EDGE *e, *eb;
+	int hash;
+	long int pos[3];
 	
 	UNDO *ut;
 	ut = matching->u;
@@ -1210,6 +1395,7 @@ void m_execute_and_delete_undos(MATCHING *matching) {
 	while (ut != NULL) {
 		if (ut->type == UNDO_CREATE_VERTEX) {
 			// ut->v must be the head of the graph
+			//printf(":undo create vertex\n");
 			m_delete_vertex(matching, ut->v);
 		}
 
@@ -1247,7 +1433,7 @@ void m_execute_and_delete_undos(MATCHING *matching) {
 			m_delete_only_edge(ut->v->matched_edge);	
 			ut->v->matched_edge = ut->e;
 		}
-		
+
 		// Undo create and insert dot
 		else if (ut->type == UNDO_CREATE_AND_INSERT_DOT) {
 			n = ut->n;
@@ -1260,6 +1446,7 @@ void m_execute_and_delete_undos(MATCHING *matching) {
 			// than setting up a cdll and including pointers in the line to each of
 			// the lines lists of its associated dots.
 
+
 			dot = (DOT *)n->key;
 			ll_node = dot->lines;
 			while (ll_node != NULL) {
@@ -1271,6 +1458,12 @@ void m_execute_and_delete_undos(MATCHING *matching) {
 				}
 				ll_node = ll_node->next;
 			}
+
+			pos[0] = dot->i;
+			pos[1] = dot->j;
+			pos[2] = dot->little_t;
+			hash = abs(fasthash32(pos, 3, 0));
+			ht_delete_key(matching->dot_ht, hash, dot, NULL);
 
 			if (dot->bfs != NULL) {
 				bfs_remove_vertex(matching->g, dot->bfs);
@@ -1310,7 +1503,120 @@ void m_execute_and_delete_undos(MATCHING *matching) {
 			free(line);
 			matching->num_lines--;
 		}
-		
+
+		else if (ut->type == UNDO_CREATE_LINE) {
+			n = ut->n;
+			line = (LINE *)n->key;
+
+			//printf(":undo create line ");
+			//m_print_line(line);
+
+			// Iterate the lines linked lists for each dot associated
+			// with the line being deleted. Find the line being deleted,
+			// and remove it from the linked list. 
+			
+			if (line->a != NULL) {
+				dot = line->a;
+				if (dot->merge != NULL) {
+					dot = dot->merge;
+				}
+				dot->lines = ll_delete_node(dot->lines, n->key);
+			}
+
+			if (line->b != NULL) {
+				dot = line->b;
+				if (dot->merge != NULL) {
+					dot = dot->merge;
+				}
+				dot->lines = ll_delete_node(dot->lines, n->key);
+			}
+
+			free(line);
+			free(n);
+		}
+
+		else if (ut->type == UNDO_INSERT_LINE) {
+			n = ut->n;
+			//printf(":undo insert line\n");
+			line = (LINE *)n->key;
+			cdll_delete_node(n, NULL);
+			matching->num_lines--;
+		}
+
+
+		else if (ut->type == UNDO_CREATE_DOT) {
+			n = ut->n;
+			dot = (DOT *)n->key;
+			//printf(":undo create dot\n");
+			ll_node = dot->lines;
+			while (ll_node != NULL) {
+				line = ((LINE *)ll_node->key);
+				if (line->a == dot) {
+					line->a = NULL;
+				} else {
+					line->b = NULL;
+				}
+				ll_node = ll_node->next;
+			}
+
+			pos[0] = dot->i;
+			pos[1] = dot->j;
+			pos[2] = dot->little_t;
+			hash = abs(fasthash32(pos, 3, 0));
+			ht_delete_key(matching->dot_ht, hash, dot, NULL);
+
+			// Free the dot and delete the lines linked list backbone
+			m_free_dot(dot);
+			free(n);
+		}
+
+		else if (ut->type == UNDO_INSERT_DOT) {
+			n = ut->n;
+			dot = (DOT *)n->key;
+
+			//printf(":undo insert dot\n");
+
+			// Delete the cdll_node pointing to this dot from matching->dots
+			cdll_delete_node(n, NULL);
+
+			if (dot->bfs != NULL) {
+				bfs_remove_vertex(matching->g, dot->bfs);
+				dot->bfs = NULL;
+			}
+
+			dot->t = ut->t;
+
+			// Free the dot and delete the lines linked list backbone
+			matching->num_dots--;
+		}
+
+
+		else if (ut->type == UNDO_LINE_EDIT) {
+			//printf("undo line edit: ");
+			ut->line->a = ut->d1;
+			ut->line->b = ut->d2;
+		}
+
+		else if (ut->type == UNDO_LINE_MOVE) {
+			//printf("undo move: ");
+			ut->d1->lines = ll_insert(ut->d1->lines, ut->line);
+			if (ut->d2 != NULL) {
+				ut->d2->lines = ll_delete_node(ut->d2->lines, ut->line);
+			}
+		}
+
+		else if (ut->type == UNDO_LINE_WT) {
+			ut->line->wt = ut->inc;
+		}
+
+		else if (ut->type == UNDO_DOT_MERGE) {
+			ut->d1->merge = ut->d2;
+		}
+
+		else if (ut->type == UNDO_DOT_T) {
+			ut->d1->t = ut->t;
+		}
+
 		ut = ut->next;
 	}
 	
@@ -1347,17 +1653,14 @@ void m_print_lattice(MATCHING *matching) {
 	while (n != matching->dots) {
 		dot = (DOT *)n->key;
 		if (dot->t < matching->t-10) break;
-		// if (dot->v != NULL) printf("v(%d, %d, %d, %ld) ", dot->v->v_num, dot->v->i, dot->v->j, dot->v->t);
-		if (dot->v != NULL) printf("v%d ", dot->v->v_num);
-		// printf("(%d, %d, %ld, %p) - ", dot->i, dot->j, dot->t, dot);
+		if (dot->v != NULL) printf("v(%d, %d, %d, %ld) ", dot->v->v_num, dot->v->i, dot->v->j, dot->v->t);
 		printf("(%d, %d, %ld) - ", dot->i, dot->j, dot->t);
 		lln = dot->lines;
 		while (lln != NULL) {
 			line = (LINE *)lln->key;
 			dd = (line->a == dot) ? line->b : line->a;
-			// if (dd->v != NULL) printf("v(%d, %d, %d, %ld) ", dd->v->v_num, dd->v->i, dd->v->j, dd->v->t);
-			// printf("(%d, %d, %ld, %p) ", dd->i, dd->j, dd->t, dd);
-			printf("(%d, %d, %ld, %d) ", dd->i, dd->j, dd->t, line->wt);
+			if (dd->v != NULL) printf("v(%d, %d, %d, %ld) ", dd->v->v_num, dd->v->i, dd->v->j, dd->v->t);
+			printf("(%d, %d, %ld) [%d] ", dd->i, dd->j, dd->t, line->wt);
 			lln = lln->next;
 		}
 		printf("\n");
@@ -1372,11 +1675,15 @@ void m_print_lattice(MATCHING *matching) {
  * \param[in] line The \ref line to print
  */
 void m_print_line(LINE *line) {	
-	printf("line a (%d, %d, %ld, %p)", line->a->i, line->a->j, line->a->t, line->a);
+	printf("line %p a (%d, %d, %ld, %ld, %p)", line, line->a->i, line->a->j, line->a->little_t, line->a->t, line->a);
 	if (line->a->v != NULL) printf(" v: %d", line->a->v->v_num);
-	printf(" b (%d, %d, %ld, %p)", line->b->i, line->b->j, line->b->t, line->b);
+	printf(" b (%d, %d, %ld, %ld, %p)", line->b->i, line->b->j, line->b->little_t, line->b->t, line->b);
 	if (line->b->v != NULL) printf(" v: %d", line->b->v->v_num);
 	printf("\n");
+}
+
+void m_print_void_line(void *key) {
+	m_print_line((LINE *)key);
 }
 
 /**
@@ -1387,7 +1694,7 @@ void m_print_line(LINE *line) {
  * \sa m_print_void_dot
  */
 void m_print_dot(DOT *dot) {
-	printf("dot (%d, %d, %ld, %p, %p)", dot->i, dot->j, dot->t, dot, dot->ball);
+	printf("dot (%d, %d, %ld, %ld, %p, %p)", dot->i, dot->j, dot->little_t, dot->t, dot, dot->ball);
 	if (dot->v != NULL) {
 		printf(" v: %d", dot->v->v_num);
 		if (dot->v->v_num < 0) printf(" ---bdy---");
@@ -1445,7 +1752,7 @@ void m_print_void_vertex(void *k) {
 		return;
 	}
 
-	printf("v: %d (%d, %d, %ld)\n", v->v_num, v->i, v->j, v->t);
+	printf("v: %d (%d, %d, %ld, %ld)\n", v->v_num, v->i, v->j, v->t, v->dot->little_t);
 }
 
 /**
@@ -1461,7 +1768,7 @@ void m_print_augmented_edges(MATCHING *matching) {
 
 	while (n != matching->augmented_edges) {
 		ae = (AUG_EDGE *)n->key;
-		printf("augmented edge: (%d,%d) to (%d,%d)\n", ae->va->i, ae->va->j, ae->vb->i, ae->vb->j);
+		printf("augmented edge: %d (%d,%d) to %d (%d,%d)\n", ae->va->v_num, ae->va->i, ae->va->j, ae->vb->v_num, ae->vb->i, ae->vb->j);
 		n = n->next;
 	}
 }

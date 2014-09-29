@@ -24,6 +24,7 @@ struct hash_table {
 HT *ht_create(int len);
 DLL_NODE *ht_insert_key(HT *ht, int id, void *key);
 HT *ht_copy(HT *ht, void *(*copy_key)(void *));
+DLL_NODE *ht_hash_lookup(HT *ht, int id); 
 DLL_NODE *ht_find_node(HT *ht, int id, void *key);
 DLL_NODE *ht_find_node_fn(HT *ht, int id, void *key, int (*comparator)(void *key1, void *key2));
 void ht_delete_key(HT *ht, int id, void *key, void (*free_key)(void *key));

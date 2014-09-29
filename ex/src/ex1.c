@@ -22,14 +22,14 @@
  * \return 0
  */
 int main(int argc, char **argv) {
-	RECIPE *recipe;
+	RECIPE_ADV *recipe;
 
 	// Initialise, then load the args
 	ARGS *args = init_args();
 	load_args(args, argc, argv);
 
 	// Create the recipe for an infinite simulation
-	recipe = qc_create_recipe(RECIPE_INFINITE, 1, 2*args->d-1, 2*args->d-1);
+	recipe = qc_create_recipe_adv(RECIPE_INFINITE, 2*args->d-1, 2*args->d-1, FALSE);
 	
 	// Generate the recipe 
 	generate_recipe(args, recipe);
@@ -37,13 +37,14 @@ int main(int argc, char **argv) {
 	// Boot up process, calculate optimal t_check
 	if (args->boot == 1) {
 		calculate_t_check(args, recipe);
+		qc_reset_recipe_adv(recipe);
 	}
 
 	// Run the simulation
 	simulate_recipe(args, recipe);
 	
 	// Free the recipe
-	qc_free_recipe(recipe);
+	qc_free_recipe_adv(recipe);
 	
 	// If we opened a file for the output, it needs to be closed
 	if (args->out_raw != stdout) { 
@@ -217,7 +218,7 @@ void load_args(ARGS *args, int argc, char **argv) {
  * \param[in] args The arguments to the simulation
  * \param[in,out] recipe The \ref recipe to be used to calculate t_check 
  */
-void calculate_t_check(ARGS *args, RECIPE *recipe) {
+void calculate_t_check(ARGS *args, RECIPE_ADV *recipe) {
 	long int big_t;
 	int changes;
 	SC_DP_QC *sc_dp_qc;
@@ -260,7 +261,7 @@ void calculate_t_check(ARGS *args, RECIPE *recipe) {
 		qc_convert_nests(qc, FALSE);
 		qc_mwpm(qc, FALSE);
 		correct_mts(sc_dp_qc);
-		qc_trim_nests(qc, qc->unfinalized_big_t - 2);
+		qc_trim_nests(qc, qc->unfinalized_big_t - 20);
 		m_time_delete(qc->m_pr);	
 		m_time_delete(qc->m_du);
 
@@ -285,7 +286,6 @@ void calculate_t_check(ARGS *args, RECIPE *recipe) {
 					args->t_check = 1;
 				}
 				
-				recipe->repeated_count = 0;
 				break;
 			}
 		}
@@ -311,7 +311,7 @@ void calculate_t_check(ARGS *args, RECIPE *recipe) {
  * \param[in] args The \ref args to generate the \ref recipe
  * \param[out] recipe The \ref recipe to be generated 
  */
-void generate_recipe(ARGS *args, RECIPE *recipe) {
+void generate_recipe(ARGS *args, RECIPE_ADV *recipe) {
 	SC_DP_QC *sc_dp_qc;
 	long int big_t;
 
@@ -320,7 +320,7 @@ void generate_recipe(ARGS *args, RECIPE *recipe) {
 	big_t = 0;
 	do {
 		measure_stabilizers(sc_dp_qc, big_t++);
-	} while (qc_boot_up(sc_dp_qc->dp_qc->qc, recipe, 2*args->d-1, 2*args->d-1, args->switch_time) != DONE);
+	} while (qc_boot_up_adv(sc_dp_qc->dp_qc->qc, recipe, args->switch_time, 12) != DONE);
 
 	free_sc_dp_qc(sc_dp_qc);
 }
@@ -331,7 +331,7 @@ void generate_recipe(ARGS *args, RECIPE *recipe) {
  * \param[in] args The \ref args to the simulation
  * \param[in] recipe  A generated \ref recipe to simulate
  */
-void simulate_recipe(ARGS *args, RECIPE *recipe) {
+void simulate_recipe(ARGS *args, RECIPE_ADV *recipe) {
 	SC_DP_QC *sc_dp_qc;
 	DP_QC *dp_qc;
 	QC *qc;
@@ -375,7 +375,7 @@ void simulate_recipe(ARGS *args, RECIPE *recipe) {
 		correct_mts(sc_dp_qc);
 
 		// not quite sure why following needs -2 rather than -1
-		qc_trim_nests(qc, qc->unfinalized_big_t - 2);
+		qc_trim_nests(qc, qc->unfinalized_big_t - 20);
 		m_time_delete(qc->m_pr);
 		m_time_delete(qc->m_du);
 
@@ -473,8 +473,9 @@ BALL *get_boundary(int i, int j, long int big_t, int type, void *boundaries) {
  * \param[in] args The args structure as filled from the command line
  * \param[in] recipe The recipe the \ref sc_dp_qc will use for computation 
  */
-SC_DP_QC *create_sc_dp_qc(ARGS *args, RECIPE *recipe) {
+SC_DP_QC *create_sc_dp_qc(ARGS *args, RECIPE_ADV *recipe) {
 	SC_DP_QC *sc_dp_qc;
+	QC *qc;
 	int i, j, d, n;
 	QUBIT ***q_arr;
 
@@ -493,7 +494,7 @@ SC_DP_QC *create_sc_dp_qc(ARGS *args, RECIPE *recipe) {
 	sc_dp_qc->num_Z_changes = 0;
 
 	// Create a new dp_qc for the sc_dp_qc
-	sc_dp_qc->dp_qc = dp_create_dp_qc(args->s0, args->s1, DE_HT_FACTOR * n * n, 
+	sc_dp_qc->dp_qc = dp_create_dp_qc_adv(args->s0, args->s1, DE_HT_FACTOR * n * n,
 		STICK_HT_FACTOR * d * d, args->p, args->t_delete, recipe, args->ems);
 	
 	// Create an n by n Pauli frame
@@ -509,15 +510,20 @@ SC_DP_QC *create_sc_dp_qc(ARGS *args, RECIPE *recipe) {
 	
 	// Allocate space for boundaries, and then create and insert them
 	// The location of boundaries is irrelevant, but a sensible choice is good for debugging
+	qc = sc_dp_qc->dp_qc->qc;
+
 	sc_dp_qc->boundaries = (BALL **)my_malloc(8 * sizeof(BALL *));
-	sc_dp_qc->bdy_s1_pr = create_boundary_set(sc_dp_qc->boundaries, 0, PRIMAL_BOUNDARY, -1, 0, 0);
-	sc_dp_qc->bdy_s2_pr = create_boundary_set(sc_dp_qc->boundaries, 1, PRIMAL_BOUNDARY, -2, 0, 0);
-	sc_dp_qc->bdy_t1_pr = create_boundary_set(sc_dp_qc->boundaries, 2, PRIMAL_BOUNDARY, -1, 1, 0);
-	sc_dp_qc->bdy_t2_pr = create_boundary_set(sc_dp_qc->boundaries, 3, PRIMAL_BOUNDARY, -2, 1, 0);
-	sc_dp_qc->bdy_s1_du = create_boundary_set(sc_dp_qc->boundaries, 4, DUAL_BOUNDARY, -1, 0, 0);
-	sc_dp_qc->bdy_s2_du = create_boundary_set(sc_dp_qc->boundaries, 5, DUAL_BOUNDARY, -2, 0, 0);
-	sc_dp_qc->bdy_t1_du = create_boundary_set(sc_dp_qc->boundaries, 6, DUAL_BOUNDARY, -1, 1, 0);
-	sc_dp_qc->bdy_t2_du = create_boundary_set(sc_dp_qc->boundaries, 7, DUAL_BOUNDARY, -2, 1, 0);
+	sc_dp_qc->bdy_s1_pr = create_boundary_set(qc, sc_dp_qc->boundaries, 0, PRIMAL_BOUNDARY, -1, 0, 0);
+	sc_dp_qc->bdy_s2_pr = create_boundary_set(qc, sc_dp_qc->boundaries, 1, PRIMAL_BOUNDARY, -2, 0, 0);
+	sc_dp_qc->bdy_t1_pr = create_boundary_set(qc, sc_dp_qc->boundaries, 2, PRIMAL_BOUNDARY, -1, 1, 0);
+	sc_dp_qc->bdy_t2_pr = create_boundary_set(qc, sc_dp_qc->boundaries, 3, PRIMAL_BOUNDARY, -2, 1, 0);
+	sc_dp_qc->bdy_s1_du = create_boundary_set(qc, sc_dp_qc->boundaries, 4, DUAL_BOUNDARY, -1, 0, 0);
+	sc_dp_qc->bdy_s2_du = create_boundary_set(qc, sc_dp_qc->boundaries, 5, DUAL_BOUNDARY, -2, 0, 0);
+	sc_dp_qc->bdy_t1_du = create_boundary_set(qc, sc_dp_qc->boundaries, 6, DUAL_BOUNDARY, -1, 1, 0);
+	sc_dp_qc->bdy_t2_du = create_boundary_set(qc, sc_dp_qc->boundaries, 7, DUAL_BOUNDARY, -2, 1, 0);
+
+	qc->get_boundary = get_boundary;
+	qc->boundaries = (void *)sc_dp_qc->boundaries;
 
 	// Create the Primal and Dual syndrome and set arrays 
 	create_initial_syndrome_and_set_arrays(sc_dp_qc, PRIMAL, d, d-1, sc_dp_qc->bdy_s1_pr, sc_dp_qc->bdy_s2_pr);
@@ -538,10 +544,10 @@ SC_DP_QC *create_sc_dp_qc(ARGS *args, RECIPE *recipe) {
  *
  * \return The newly created \ref set for the boundary
  */
-SET *create_boundary_set(BALL **boundaries, int id, int type, int i, int j, int t) {
+SET *create_boundary_set(QC *qc, BALL **boundaries, int id, int type, int i, int j, int t) {
 	SET *set;
 
-	set = qc_create_set(type, i, j, t, NULL);
+	set = qc_create_set_adv(qc, type, i, j, t, NULL);
 	boundaries[id] = set->ball;
 
 	return set;
@@ -591,18 +597,18 @@ void create_initial_syndrome_and_set_arrays(SC_DP_QC *sc_dp_qc, int type, int im
 
 			if (bs == 0) {
 				// Create a set with the first boundary
-				set_arr[is][js][1] = qc_create_set(type, seti, setj, 1, bdy_s1);
-				set_arr[is][js][0] = qc_create_set(type, seti, setj, 2, bdy_s1);
+				set_arr[is][js][1] = qc_create_set_adv(sc_dp_qc->dp_qc->qc, type, seti, setj, 1, bdy_s1);
+				set_arr[is][js][0] = qc_create_set_adv(sc_dp_qc->dp_qc->qc, type, seti, setj, 2, bdy_s1);
 			}
 			else if (bs == bmax-1) {
 				// Create a set with the second boundary
-				set_arr[is][js][1] = qc_create_set(type, seti, setj, 1, bdy_s2);
-				set_arr[is][js][0] = qc_create_set(type, seti, setj, 2, bdy_s2);
+				set_arr[is][js][1] = qc_create_set_adv(sc_dp_qc->dp_qc->qc, type, seti, setj, 1, bdy_s2);
+				set_arr[is][js][0] = qc_create_set_adv(sc_dp_qc->dp_qc->qc, type, seti, setj, 2, bdy_s2);
 			}
 			else {
 				// Create a set with no boundary
-				set_arr[is][js][1] = qc_create_set(type, seti, setj, 1, NULL);
-				set_arr[is][js][0] = qc_create_set(type, seti, setj, 2, NULL);
+				set_arr[is][js][1] = qc_create_set_adv(sc_dp_qc->dp_qc->qc, type, seti, setj, 1, NULL);
+				set_arr[is][js][0] = qc_create_set_adv(sc_dp_qc->dp_qc->qc, type, seti, setj, 2, NULL);
 			}
 
 			// Insert the new set into the set array, and associate the set with a syndrome
@@ -731,14 +737,14 @@ void free_sc_dp_qc(SC_DP_QC *sc_dp_qc) {
 	my_3d_free(d-1, d, (void ***)sc_dp_qc->set_arr_du);
 
 	// Free the sets associated with the boundaries
-	qc_free_set(sc_dp_qc->bdy_s1_pr);
-	qc_free_set(sc_dp_qc->bdy_s2_pr);
-	qc_free_set(sc_dp_qc->bdy_t1_pr);
-	qc_free_set(sc_dp_qc->bdy_t2_pr);
-	qc_free_set(sc_dp_qc->bdy_s1_du);
-	qc_free_set(sc_dp_qc->bdy_s2_du);
-	qc_free_set(sc_dp_qc->bdy_t1_du);
-	qc_free_set(sc_dp_qc->bdy_t2_du);
+	qc_free_bdy(sc_dp_qc->bdy_s1_pr);
+	qc_free_bdy(sc_dp_qc->bdy_s2_pr);
+	qc_free_bdy(sc_dp_qc->bdy_t1_pr);
+	qc_free_bdy(sc_dp_qc->bdy_t2_pr);
+	qc_free_bdy(sc_dp_qc->bdy_s1_du);
+	qc_free_bdy(sc_dp_qc->bdy_s2_du);
+	qc_free_bdy(sc_dp_qc->bdy_t1_du);
+	qc_free_bdy(sc_dp_qc->bdy_t2_du);
 
 	// Free the boundaries array
 	free(sc_dp_qc->boundaries);
@@ -1097,13 +1103,13 @@ void H_X_syn_meas_Z_syn(SC_DP_QC *sc_dp_qc, long int big_t, DP_QC *dp_qc, int n,
 				qc_unassociate_syndrome(syn_arr_du[is][js]);
 				qc_associate_syndrome(set_arr_du[is][js][lay2], syn_arr_du[is][js]);
 				if (i == 1) {
-					set_arr_du[is][js][lay1] = qc_create_set(DUAL, i, j, 2, bdy_s1_du);
+					set_arr_du[is][js][lay1] = qc_create_set_adv(sc_dp_qc->dp_qc->qc, DUAL, i, j, 2, bdy_s1_du);
 				}
 				else if (i == n-2) {
-					set_arr_du[is][js][lay1] = qc_create_set(DUAL, i, j, 2, bdy_s2_du);
+					set_arr_du[is][js][lay1] = qc_create_set_adv(sc_dp_qc->dp_qc->qc, DUAL, i, j, 2, bdy_s2_du);
 				}
 				else {
-					set_arr_du[is][js][lay1] = qc_create_set(DUAL, i, j, 2, NULL);
+					set_arr_du[is][js][lay1] = qc_create_set_adv(sc_dp_qc->dp_qc->qc, DUAL, i, j, 2, NULL);
 				}						
 				qc_insert_set(dp_qc->qc, set_arr_du[is][js][lay1]);
 			}
@@ -1151,13 +1157,13 @@ void meas_X_syn_dead_Z_syn(SC_DP_QC *sc_dp_qc, long int big_t, DP_QC *dp_qc, int
 				qc_unassociate_syndrome(syn_arr_pr[is][js]);
 				qc_associate_syndrome(set_arr_pr[is][js][lay2], syn_arr_pr[is][js]);
 				if (j == 1) {
-					set_arr_pr[is][js][lay1] = qc_create_set(PRIMAL, i, j, 2, bdy_s1_pr);
+					set_arr_pr[is][js][lay1] = qc_create_set_adv(dp_qc->qc, PRIMAL, i, j, 2, bdy_s1_pr);
 				}
 				else if (j == n-2) {
-					set_arr_pr[is][js][lay1] = qc_create_set(PRIMAL, i, j, 2, bdy_s2_pr);
+					set_arr_pr[is][js][lay1] = qc_create_set_adv(dp_qc->qc, PRIMAL, i, j, 2, bdy_s2_pr);
 				}
 				else {
-					set_arr_pr[is][js][lay1] = qc_create_set(PRIMAL, i, j, 2, NULL);
+					set_arr_pr[is][js][lay1] = qc_create_set_adv(dp_qc->qc, PRIMAL, i, j, 2, NULL);
 				}						
 				qc_insert_set(dp_qc->qc, set_arr_pr[is][js][lay1]);
 			}
@@ -1338,6 +1344,7 @@ void test_correct(SC_DP_QC *sc_dp_qc, FILE *out) {
 	QC *qc2;
 	int n, i, j, count;
 
+	//printf("Test correct\n");
 	sc_dp_qc2 = copy_sc_dp_qc(sc_dp_qc);
 	dp_qc2 = sc_dp_qc2->dp_qc;
 	qc2 = dp_qc2->qc;
@@ -1346,8 +1353,15 @@ void test_correct(SC_DP_QC *sc_dp_qc, FILE *out) {
 	// Enable perfect gates and perform a perfect round of stabilizer
 	// measurements, followed by matching, then correction.
 	qc2->perfect_gates = true;
+
+	qc2->m_pr->undo_flag = TRUE;
+	qc2->m_du->undo_flag = TRUE;
+
 	measure_stabilizers(sc_dp_qc2, qc2->big_t);
+
+	qc_finalize_nests(qc2, qc2->big_t);
 	qc_convert_nests(qc2, TRUE);
+
 	qc_mwpm(qc2, TRUE);
 	correct_mts(sc_dp_qc2);
 
@@ -1401,7 +1415,13 @@ void test_correct(SC_DP_QC *sc_dp_qc, FILE *out) {
 	}
 
 	qc_undo_mwpm(qc2);
+
 	free_sc_dp_qc_copy(sc_dp_qc2);
+
+	sc_dp_qc->dp_qc->qc->m_pr->undo_flag = FALSE;
+	sc_dp_qc->dp_qc->qc->m_du->undo_flag = FALSE;
+
+	//printf("End test correct\n");
 }
 
 /**

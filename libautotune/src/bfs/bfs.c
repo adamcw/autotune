@@ -18,6 +18,19 @@ BFS_GRAPH *bfs_create_graph() {
 	return g;
 }
 
+void bfs_validate(BFS_GRAPH *g) {
+	CDLL_NODE *cdlln;
+	cdlln = g->vertex_ll->next;
+	while (cdlln != g->vertex_ll) {
+		BFS_VERTEX *v = (BFS_VERTEX *)cdlln->key;
+		if (v->v_num > 0 && v->num_edges == 0) {
+			printf("Vertex with no edges "); bfs_print_vertex(v);
+			//assert(v->num_edges != 0);
+		}
+		cdlln = cdlln->next;
+	}
+}
+
 void bfs_free_graph(BFS_GRAPH *g) {
 	cdll_free(g->vertex_ll, bfs_free_void_vertex);
 	bh_free(g->vertex_h, NULL);
@@ -73,7 +86,6 @@ void bfs_init_search(BFS_GRAPH *g, BFS_VERTEX *v0) {
 
 	v0->d = 0;
 	bfs_insert_vertex_in_h(g, v0);
-	// bfs_print_vertex_h(g);
 }
 
 BFS_VERTEX *bfs_remove_first_v(BHEAP *h) {

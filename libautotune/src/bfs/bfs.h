@@ -39,6 +39,7 @@ struct bfs_edge {
 };
 
 BFS_GRAPH *bfs_create_graph();
+void bfs_validate(BFS_GRAPH *g);
 void bfs_free_graph(BFS_GRAPH *g);
 void bfs_remove_edge(BFS_GRAPH *g, BFS_EDGE *e);
 void bfs_remove_vertex(BFS_GRAPH *g, BFS_VERTEX *v);

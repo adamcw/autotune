@@ -17,6 +17,7 @@
 #define X 1
 #define Z 2
 #define Y 3
+#define L 4
 
 // PRIMAL/DUAL DEFINITIONS
 #define PRIMAL_BOUNDARY 2
@@ -31,7 +32,7 @@
 #define TWO_QUBIT_GATE 2
 
 // MISCELLANEOUS
-#define STICK_HT_SIZE 13
+#define STICK_HT_SIZE 101
 #define TRUE 1
 #define FALSE 0
 #define FAIL_LABEL -1 // set to value of problematic error label (debugging only)
@@ -40,6 +41,16 @@
 // RECIPE TYPE DEFINITIONS
 #define RECIPE_INFINITE 1
 #define RECIPE_FINITE 2
+
+// TIMER DEFINITIONS
+#define START 1
+#define STOP 0
+#define TIMERS 50
+extern double t_start[TIMERS];
+extern double t_total[TIMERS];
+extern int t_counts[TIMERS];
+extern const char *t_name[TIMERS];
+void timer(int timer_num, int action, const char *name);
 
 /** \defgroup qc Quantum Computer */
 /** \defgroup qubit Qubit */
@@ -64,6 +75,7 @@ typedef struct error ERROR;
 typedef struct de DE; 
 typedef struct syndrome SYNDROME;
 typedef struct set SET;
+typedef struct set_pos SET_POS;
 typedef struct measurement MEASUREMENT;
 typedef struct nest NEST;
 typedef struct ball BALL;
@@ -72,7 +84,7 @@ typedef struct recipe RECIPE;
 typedef struct layer LAYER;
 typedef struct block BLOCK;
 typedef struct offset OFFSET;
-
+typedef struct recipe_adv RECIPE_ADV;
 
 /**
  * \ingroup qc
@@ -102,7 +114,10 @@ struct qc {
 
 	/** A heap containing all of the sets */
 	BHEAP *set_heap;
-	
+
+	CDLL_NODE *finalized_balls;
+	CDLL_NODE *zombie_dots;
+
 	/** The number of error models in the given architecture */
 	int num_ems;
 
@@ -152,6 +167,7 @@ struct qc {
 
 	/** The recipe for the quantum computation */
 	RECIPE *recipe;
+	RECIPE_ADV *recipe_adv;
 	
 	/** Whether or not gates can be applied without error. */
 	int perfect_gates;
@@ -166,6 +182,11 @@ struct qc {
 
 	/** An array of boundaries */
 	void *boundaries;
+
+	int logical_loss_err_pr;
+	int last_logical_loss_err_pr;
+	int logical_loss_err_du;
+	int last_logical_loss_err_du;
 };
 
 /**
@@ -389,6 +410,9 @@ struct set {
 	/** The big_t of the \ref set */
 	long int big_t;
 
+	/** The t of the \ref set */
+	long int t;
+
 	/** The index of this \ref set in the \ref set \ref heap in \ref qc */
 	int qc_heap_i;
 
@@ -397,6 +421,11 @@ struct set {
 
 	/** The boundary this \ref set is closest to */
 	SET *bdy;
+
+	BLOCK *block;
+
+	/** */
+	CDLL_NODE *set_pos_cdll;
 
 	/** A \ref cdll of \ref syndrome%s for this \ref set */
 	CDLL_NODE *syn_cdll;
@@ -412,6 +441,24 @@ struct set {
 
 	/** A stored copy of the \ref set, used to restore the \ref set to a previous state */
 	SET *copy;
+};
+
+/**
+ * \ingroup set
+ * \brief A set's position
+ */
+struct set_pos {
+    /** The i coordinate */
+	int i;
+
+    /** The j coordinate */
+    int j;
+
+    /** The layer of the \ref set */
+	int lay;
+
+	/** The \ref set of this \ref set_pos */
+	SET *set;
 };
 
 /**
@@ -475,6 +522,11 @@ struct ball {
 
 	/** The big_t */
 	long int big_t;
+
+	/** The t **/
+	long int t;
+
+	int hash_ijt;
 
 	/** A \ref ht of \ref stick%s connected to this \ref ball */
 	HT *stick_ht;
@@ -572,6 +624,34 @@ struct recipe {
 	long int repeated_count;
 };
 
+struct recipe_adv {
+	int type;
+	int n;
+	int m;
+
+	/** The minimum weight horizontal edge connecting the primal boundaries */
+	int min_horz_wt_pr;
+	
+	/** The minimum weight horizontal edge connecting the dual boundaries */
+	int min_horz_wt_du;
+
+	/** Hash table of unique blocks */
+	HT *block_ht;
+	/** Hash table of unique offsets */
+	HT *offset_ht;
+
+	CDLL_NODE *block_cdll;
+	CDLL_NODE ***block_arr;
+	long int **t_arr;
+
+	int in_cycle;
+	int cycle_len;
+	long int cycle_t0;
+	long int cycle_period;
+	CDLL_NODE *cycle_begin;
+	CDLL_NODE *cycle_end;
+};
+
 /**
  * \brief A layer of blocks 
  */
@@ -596,6 +676,19 @@ struct block {
 	/** The type of \ref block (PRIMAL/DUAL) */
 	int type;
 
+	/** The position of the block in the i dimension */
+	int i;
+
+	/** The position of the block in the j dimension */
+	int j;
+
+	long int t;
+
+	long int big_t;
+
+	/** The hash of the block based on its location */
+	int hash_ijt;
+
 	/** A \ref llist of \ref offset%s for this \ref block */
 	LL_NODE *offsets;
 };
@@ -616,16 +709,28 @@ struct offset {
 	/** The offset in the big_t dimension */
 	long int big_t;
 
+	/** The offset in the t dimension */
+	long int t;
+
 	/** The type of \ref offset */
 	int type;
 
 	/** The weight of the \ref offset */
 	int wt;
+
+	double p;
+
+	/** The hash of this offset */
+	int hash_ijt;
 };
 
 
 // QC FUNCTIONS
 QC *qc_create_qc(int s0, int s1, int de_ht_size, int stick_ht_size, int t_delete, RECIPE *recipe);
+QC *qc_create_qc_adv(int s0, int s1, int de_ht_size, int stick_ht_size, int t_delete, RECIPE_ADV *recipe);
+void qc_init_qc(QC *qc, int s0, int s1, int de_ht_size, int stick_ht_size, int t_delete);
+void qc_free_uninserted_dots_and_lines(NEST *nest);
+void qc_free_unfinalized_dots_and_lines(CDLL_NODE *finalized_balls); 
 void qc_free_qc(QC *qc);
 void qc_free_qc_copy(QC *qc);
 void qc_increment_big_t(QC *qc);
@@ -639,11 +744,15 @@ void *qc_copy_void_error(void *key);
 STICK *qc_copy_stick(STICK *stick);
 void *qc_copy_void_stick(void *key);
 BALL *qc_copy_ball(BALL *ball);
+void *qc_copy_null_ball(void *key); 
+void *qc_copy_null_dot(void *key); 
 void *qc_copy_void_ball(void *key);
 SYNDROME *qc_copy_syndrome(SYNDROME *syn);
 void *qc_copy_void_syndrome(void *key);
 SET *qc_copy_set(SET *set);
 void *qc_copy_void_set(void *key);
+SET_POS *qc_copy_set_pos(SET_POS *sp);
+void *qc_copy_void_set_pos(void *key);
 CDLL_NODE *qc_copy_syn_cdll(CDLL_NODE *syn_cdll);
 MEASUREMENT *qc_copy_measurement(MEASUREMENT *mt);
 void *qc_copy_void_measurement(void *key);
@@ -726,13 +835,21 @@ void qc_syndrome_set_set_cdlln(void *key, CDLL_NODE *n);
 
 // SET FUNCTIONS
 SET *qc_create_set(int type, int i, int j, int num_meas_left, SET *bdy);
+SET *qc_create_set_adv(QC *qc, int type, int i, int j, int num_meas_left, SET *bdy); 
+SET_POS *qc_create_set_pos(int i, int j, int lay);
+void qc_swap_set_layer(SET *set, int lay);
+void qc_free_bdy(SET *set);
 void qc_free_set(SET *set);
 void qc_free_void_set(void *key);
+void qc_free_void_set_and_dot(void *key); 
 void qc_insert_set(QC *qc, SET *set);
 void qc_uninsert_set(QC *qc, SET *set);
 int qc_set_lt_big_t(void *key1, void *key2);
 void qc_set_swap(BHEAP *h, int i1, int i2);
 void qc_set_set_qc_heap_i(void *key, int i);
+int qc_is_boundary_set(SET *set);
+void qc_merge_dots_without_boundary(MATCHING *m, DOT *dot1, DOT *dot2, LL_NODE *lln_save); 
+int qc_merge_dots_with_boundary(MATCHING *m, DOT *dot1, DOT *dot2, LL_NODE *lln_save); 
 SET *qc_merge_sets(QC *qc, SET *set1, SET *set2);
 void qc_finalize_set(QC *qc, SET *set, long int t);
 
@@ -753,6 +870,11 @@ void qc_convert_nest(QC *qc, NEST *nest, MATCHING *m, int undo);
 
 // BALL FUNCTIONS
 BALL *qc_create_ball(SET *set, int stick_ht_size);
+BALL *qc_create_ball_adv(SET *set, int stick_ht_size);
+
+BALL *qc_create_ball_raw(int type, int i, int j, long int big_t, int stick_ht_size);
+BALL *qc_create_ball_raw_adv(int type, int i, int j, long int t, long int big_t, int stick_ht_size);
+
 void qc_free_ball(BALL *ball);
 void qc_free_void_ball(void *key);
 void qc_insert_ball(NEST *nest, BALL *ball);
@@ -773,48 +895,72 @@ void qc_finalize_stick(STICK *stick);
 
 // RECIPE FUNCTIONS
 RECIPE *qc_create_recipe(int type, int num, int n, int m); 
+RECIPE_ADV *qc_create_recipe_adv(int type, int n, int m, int copy);
 void qc_free_recipe(RECIPE *recipe);
+void qc_free_recipe_adv(RECIPE_ADV *recipe);
+void qc_reset_recipe_adv(RECIPE_ADV *recipe); 
 
 // LAYER FUNCTIONS
 LAYER *qc_create_layer(int n, int m);
 void qc_add_layer(RECIPE *recipe, LAYER *layer); 
 int qc_compare_layers(LAYER *l1, LAYER *l2, int n, int m);
 int qc_is_empty_layer(LAYER *layer, int n, int m);
+
 LAYER *qc_build_layer(QC *qc, RECIPE *recipe, int n, int m, long int layer_big_t);
+
 void qc_free_layer(LAYER *layer, int n);
 
 // BLOCK FUNCTIONS
 BLOCK *qc_create_block(RECIPE *recipe, BALL *ball, int type);
+BLOCK *qc_create_block_adv(RECIPE_ADV *recipe, BALL *ball);
+
 void qc_create_and_insert_blocks(QC *qc, RECIPE *recipe, LAYER *layer, long int layer_big_t, int type);
+int qc_create_and_insert_blocks_adv(QC *qc, RECIPE_ADV *recipe, int type, long int thresh_big_t, int thresh_cycle_len);
+
 LL_NODE *qc_add_block(LL_NODE *blocks_head, BLOCK *block);
 BLOCK *qc_block_lookup(LL_NODE *blocks_head, BLOCK *block);
 int qc_block_eq(BLOCK *b1, BLOCK *b2);
+int qc_block_eq_adv(BLOCK *b1, BLOCK *b2);
 void qc_free_block(BLOCK *block);
 void qc_free_void_block(void *block);
 
 // OFFSET FUNCTIONS
 OFFSET *qc_create_offset(int i, int j, long int big_t, double wt, int type);
+OFFSET *qc_create_offset_adv(int i, int j, long int t, double wt, int type);
+
 LL_NODE *qc_add_offset(LL_NODE *offset_head, OFFSET *offset);
 OFFSET *qc_find_offset(BLOCK *block, int i, int j, long int big_t, double wt);
 OFFSET *qc_offset_lookup(LL_NODE *offset_head, OFFSET *offset);
+
+OFFSET *qc_offset_lookup_adv(HT *ht, int hash, OFFSET *offset);
+
 int qc_offset_eq(void *k1, void *k2);
+int qc_offset_eq_adv(void *k1, void *k2);
 int qc_offset_lt(void *k1, void *k2);
+int qc_offset_lt_adv(void *k1, void *k2);
 void qc_free_offset(OFFSET *offset);
 
 // BOOTUP FUNCTIONS
-int qc_boot_up(QC *qc, RECIPE *recipe, int n, int m, long int switch_time); 
+int qc_boot_up(QC *qc, RECIPE *recipe, int n, int m, long int switch_time);
+int qc_boot_up_adv(QC *qc, RECIPE_ADV *recipe, long int thresh_big_t, int thresh_cycle_len);
 int qc_boot_up_infinite(QC *qc, RECIPE *recipe, int n, int m, long int switch_time);
 
 // CONVERT FUNCTIONS
+int qc_hash_ball(BALL *ball); 
+int qc_hash_ijt(int i, int j, long int t);
+BLOCK *qc_get_block_for_set(QC *qc, SET *set); 
+void qc_convert_block_to_dot_and_lines(QC *qc, MATCHING *matching, BALL *ball, BLOCK *block);
 void qc_convert_balls_to_dots(QC *qc, MATCHING *matching, CDLL_NODE *ball_cdll, int num_blocks);
 void qc_convert_offsets_to_lines(QC *qc, MATCHING *matching, NEST *nest, CDLL_NODE *ball_cdll, LAYER *layer, int num_blocks);
 
 // CONVERT INFINITE FUNCTIONS
+
 LAYER *qc_get_next_layer_infinite(QC *qc);
 void qc_convert_nest_infinite(QC *qc, int undo);
 
 // ERROR OP FUNCTIONS
 void qc_iden_transform_error(ERROR *error);
+void qc_loss_transform_error(__attribute__((unused)) ERROR *error);
 void qc_H_transform_error(ERROR *error);
 void qc_X_transform_error(ERROR *error);
 void qc_Y_transform_error(ERROR *error);
@@ -837,6 +983,7 @@ void qc_print_errors(CDLL_NODE *sent);
 void qc_print_error_circle(ERROR *error);
 void qc_print_error_circles(CDLL_NODE *sent);
 void qc_print_set(SET *set);
+void qc_print_void_set_pos(void *key); 
 void qc_print_void_set(void *key);
 void qc_print_set_heap(QC *qc);
 void qc_print_de(DE *de);
@@ -859,5 +1006,6 @@ void qc_print_void_block(void *block);
 void qc_print_blocks(LL_NODE *blocks_head);
 void qc_print_layer(LAYER *layer, int n, int m);
 void qc_print_recipe(RECIPE *recipe);
+void qc_print_recipe_adv(RECIPE_ADV *recipe);
 
 #endif

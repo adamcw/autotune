@@ -15,6 +15,15 @@
 #define UNDO_MATCHED_EDGE 5
 #define UNDO_UPDATE_LAST_GRAPH_HEAD 6
 #define UNDO_UPDATE_LAST_GRAPH_TAIL 7
+#define UNDO_CREATE_LINE 8
+#define UNDO_INSERT_LINE 9
+#define UNDO_CREATE_DOT 10
+#define UNDO_INSERT_DOT 11
+#define UNDO_LINE_MOVE 12
+#define UNDO_LINE_EDIT 13
+#define UNDO_LINE_WT 14
+#define UNDO_DOT_MERGE 15
+#define UNDO_DOT_T 16
 
 /* general constants */
 
@@ -83,8 +92,16 @@ struct dot {
 	/** The j coordinate of the dot */
 	int j;
 
-	/** The t coordinate of the dot */
+	/*
+	 * The big_t coordinate of the dot. 
+	 *
+	 * This confusing syntax is due to match
+	 * predating a lot of other code 
+	 */
 	long int t;
+
+	/** The t coordinate of the dot */
+	long int little_t;
 
 	/** The vertex associated with the dot */
 	VERTEX *v;
@@ -97,6 +114,8 @@ struct dot {
 
 	/** The vertex in the bfs structure for this dot */
 	BFS_VERTEX *bfs;
+
+	DOT *merge;
 };
 
 struct line {
@@ -172,8 +191,15 @@ struct matching {
 	/** The \ref dot%s in the matching lattice */
 	CDLL_NODE *dots;
 
+	/** A hash table of the dots in the lattice */
+	HT *dot_ht;
+
 	/** The \ref line%s in the matching lattice */
 	CDLL_NODE *lines;
+
+	/** A hash table of the lines in the lattice */
+
+	//HT *line_ht;
 
 	/** The graph to perform breadth first search to connect vertices to only
 	 * their nearest neighbors */
@@ -181,6 +207,8 @@ struct matching {
 
 	/** The last timestep the \ref bfs_graph was updated */
 	long int t_bfs;
+
+	CDLL_NODE *t_cdlln;
 
 	/** The number of \ref dot%s */
 	int num_dots;
@@ -199,6 +227,8 @@ struct matching {
 	
 	/** The number of timesteps to keep when deleting */
 	int t_delete;
+
+	int t_delay;
 };
 
 struct undo {
@@ -219,6 +249,12 @@ struct undo {
 
 	/** A ::CDLL_NODE to be saved */
 	CDLL_NODE *n;
+
+	DOT *d1;
+	DOT *d2;
+	LINE *line;
+
+	long int t;
 
 	/** The next undo in the list */
 	UNDO *next;
@@ -262,6 +298,8 @@ void m_free_void_dot(void *key);
 
 LINE *m_create_and_insert_line(MATCHING *m, DOT *da, DOT *db, float p_stick); 
 LINE *m_create_and_insert_line_wt(MATCHING *m, DOT *da, DOT *db, int wt);
+LINE *m_create_line_wt(MATCHING *m, DOT *da, DOT *db, int wt); 
+void m_insert_line(MATCHING *m, LINE *line);
 
 // VERTEX
 
@@ -280,7 +318,8 @@ void m_delete_only_edge(EDGE *e);
 
 // UNDO
 
-void m_create_undo(MATCHING *matching, int type, VERTEX *v, int inc, EDGE *e, VERTEX *v2, CDLL_NODE *n);
+void m_create_undo(MATCHING *matching, int type, VERTEX *v, long int inc, EDGE *e, VERTEX *v2, CDLL_NODE *n);
+void m_create_line_undo(MATCHING *matching, int type, LINE *line, DOT *d1, DOT *d2, int wt, long int t);
 void m_execute_and_delete_undos(MATCHING *matching);
 
 // PRINT FUNCTIONS
@@ -288,6 +327,7 @@ void m_execute_and_delete_undos(MATCHING *matching);
 void m_print_matching(MATCHING *matching);
 void m_print_lattice(MATCHING *matching);
 void m_print_line(LINE *line);	
+void m_print_void_line(void *key);
 void m_print_dot(DOT *dot);
 void m_print_void_dot(void *key);
 void m_print_graph(MATCHING *matching);

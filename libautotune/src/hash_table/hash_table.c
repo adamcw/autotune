@@ -71,6 +71,19 @@ HT *ht_copy(HT *ht, void *(*copy_key)(void *)) {
 }
 
 /**
+ * \brief Returns the linked list associated with a hash
+ * 
+ * \param[in] ht The hash table to lookup
+ * \param[in] id The id (hash) to search for
+ *
+ * \return The DLL_NODE at the head of the dll containing all the elements
+ * matching the search for hash.
+ */
+DLL_NODE *ht_hash_lookup(HT *ht, int id) {
+	return ht->table[id % ht->length];
+}
+
+/**
  * \brief Finds a node in a hash table
  *
  * Finds a specific node in a hash table. Requires the knowledge of both the

@@ -36,9 +36,16 @@ for d in structure.keys():
                 "More than one value of t_delete detected for d = %s, p = %s. "
                 "Defaulting to use the highest t_delete: %s\n" % (d, p, t_delete))
 
+        t_check = 0
         for run in structure[d][p][t_delete]:
             row_id = "%s_%s_%s_%s" % (d, p, t_delete, run)
             o = rows['rows'][row_id]
+            
+            if not t_check:
+                t_check = o['options']['t_check']
+
+            if o['options']['t_check'] != t_check:
+                continue
 
             row = (
                 o['results']['x_checks'], 
@@ -65,7 +72,7 @@ if args['--output']:
     fp.close()
 
 for d in map(str, sorted(map(int, output.keys()))):
-    for p in map(str, sorted(map(float, output[d].keys()))):
+    for p in sorted(output[d].keys(), key=lambda x: float(x)):
         row = output[d][p]
 
         # Only include points with more than THRESHOLD changes, otherwise the point

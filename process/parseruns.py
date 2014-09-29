@@ -26,7 +26,7 @@ args = docopt(__doc__, version='Parse Runs v0.1')
 runs_dir = args['<dir>']
 
 if not os.path.isdir(runs_dir):
-    sys.stderr.write("Unable to find the given directory: %s" % runs_dir)
+    sys.stderr.write("Unable to find the given directory: %s\n" % runs_dir)
     sys.exit()
 
 rows = parse_runs(runs_dir, args)

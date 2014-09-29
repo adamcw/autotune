@@ -51,18 +51,18 @@ ARGS *init_args();
 void load_args(ARGS *args, int argc, char **argv);
 
 // Recipe Functions
-void generate_recipe(ARGS *args, RECIPE *recipe);
-void simulate_recipe(ARGS *args, RECIPE *recipe);
+void generate_recipe(ARGS *args, RECIPE_ADV *recipe);
+void simulate_recipe(ARGS *args, RECIPE_ADV *recipe);
 
 // Boot Up Functions
-void calculate_t_check(ARGS *args, RECIPE *recipe);
+void calculate_t_check(ARGS *args, RECIPE_ADV *recipe);
 
 // Boundary Functions
 BALL *get_boundary(int i, int j, long int big_t, int type, void *boundaries); 
 
 // SC_DP_QC Functions
-SC_DP_QC *create_sc_dp_qc(ARGS *args, RECIPE *recipe);
-SET *create_boundary_set(BALL **boundaries, int id, int type, int i, int j, int t);
+SC_DP_QC *create_sc_dp_qc(ARGS *args, RECIPE_ADV *recipe);
+SET *create_boundary_set(QC *qc, BALL **boundaries, int id, int type, int i, int j, int t);
 void create_initial_syndrome_and_set_arrays(SC_DP_QC *sc_dp_qc, int type, int imax, int jmax, SET *bdy_s1, SET *bdy_s2);
 SC_DP_QC *copy_sc_dp_qc(SC_DP_QC *sc_dp_qc);
 void free_sc_dp_qc(SC_DP_QC *sc_dp_qc);

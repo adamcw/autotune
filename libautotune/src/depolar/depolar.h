@@ -48,6 +48,8 @@ struct dp_qc {
 
 // DP_QC FUNCTIONS
 DP_QC *dp_create_dp_qc(int s0, int s1, int de_ht_size, int stick_ht_size, double p, int t_delete, RECIPE *recipe, char *ems);
+DP_QC *dp_create_dp_qc_adv(int s0, int s1, int de_ht_size, int stick_ht_size, double p, int t_delete, RECIPE_ADV *recipe, char *ems);
+void dp_init_dp_qc(DP_QC *dp_qc, char *ems);
 int dp_load_error_model(DP_QC *dp_qc, char *ems, const char *filename);
 DP_QC *dp_copy_dp_qc(DP_QC *dp_qc);
 void dp_free_dp_qc(DP_QC *dp_qc);

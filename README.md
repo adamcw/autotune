@@ -26,19 +26,62 @@ Now you can run any of the examples from the directory:
 
 ### Complete Installation Instructions ###
 
-    git clone git@github.com:adamcw/autotune.git
-    cd ./autotune/
-    make install
-    cd ./process
-    ./run.py --input example_runs.json
+    git clone git@github.com:adamcw/autotune.git;
+    cd ./autotune;
+    make install;
 
-## Issues ##
+__NOTE:__ This process may fail when trying to install the Python dependencies.
+See 'Known Issues' below for more information should this occur, and/or follow
+on screen instructions.
 
-If there are build issues, you can try and build using a specific version of
-`gcc` by modifying your environment to export `$CXX`. If using bash, edit your
-`.bashrc` or `.bash_profile` to include:
+## Running the Example ##
+
+    cd ./process;
+    ./run.py --input example_runs.json;
+
+__NOTE:__ For instructions on the use of `run.py` and other pieces of the
+processing pipeline, please read: ./process/README.md
+
+## Potential Issues ##
+
+### Incorrect Compiler ###
+
+By default the script will try and use `g++` if the environment variable CXX is
+not set. If there are build issues, you can try and build using a specific
+version of `gcc` by modifying your environment to export `$CXX`. If using bash,
+edit your `.bashrc` or `.bash_profile` to include:
 
     export CXX=g++;
+
+__NOTE:__ On OSX the default value for CXX may be `clang` (`c++`) rather than
+`gcc` (`g++`). As the script will look at CXX before any other value, be sure
+to use this line to ensure `gcc` is being used.
+
+### No Python / Incorrect Version of Python ###
+
+The processing pipeline (process directory) requires Python 2.7. If this is not
+available, the installation of the processing pipeline will fail.
+
+### Python Package Installer (pip) Not Available ###
+
+If you have Python but the python package installer, `pip`, is not installed.
+Then you will need to install `pip`, or use a virtualenv (virtual environment).
+See below for this case.
+
+### Insufficient Privliages to Install/Use pip ###
+
+If this is required `make install` will suggest using `make virtualenv`. Run
+this command. If it fails due to `virtualenv` not being installed on your
+system, then it will suggest using `make virtualenv_install`. Once a virtualenv
+(virtual environment) is created via this process, onscreen instructions will
+be provided as to its use. 
+
+__Detailed instructions on virtual environments, their creation, and their usage
+are available in ./process/README.md with relevant sections listed below__
+
+- Installation 
+- Creating a Virtual Environment
+- Using a Virtual Environment
 
 ## What's in Autotune? ##
 
@@ -66,9 +109,15 @@ If there are build issues, you can try and build using a specific version of
 - Examples of the use of the `Autotune` library This contains the following examples:
     - `ex1` (The use of `Autotune` to implement the Surface Code on a
         solid-state quantum computer)
+    - `ex2` (The use of `Autotune` to implement the Topological Cluster State
+      with qubit loss)
 - Processing scripts for generating graphs based on the output of `Autotune`
 
 ## Building Autotune ##
+
+- You can install/compile all of Autotune using:
+
+    make install;
 
 You can compile `libautotune` on its own:
 
@@ -98,15 +147,26 @@ You can compile all targets at once:
 
 ## Processing Autotune ##
 
+    For more information on processing the output of `Autotune` into a
+    summarised format or graph please read the associated `README.md`.
+
     See: process/README.md
 
 ## Polyestimate Tool ##
 
     See: tools/polyestimate/README.md
 
-    Austin G. Fowler. "Polyestimate: instantaneous open source surface code analysis"
+    Austin G. Fowler. 
+    "Polyestimate: instantaneous open source surface code analysis"
     Awaiting Publication (2013)
     Note: arXiv:1307.0689, http://topqec.com.au/autotune.html
+
+## Topological Cluster State ##
+
+    Adam C. Whiteside, Austin G. Fowler 
+    "Practical Topological Cluster State Quantum Computing Requires Loss Below 1%"
+    Awaiting Publication (2014)
+    Note: arXiv:1409.4880, http://topqec.com.au/autotune.html
 
 ## More Information ##
 

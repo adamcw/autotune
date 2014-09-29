@@ -2,13 +2,13 @@
 """Run
 
 Usage:
-  run.py [--input=INPUT] [--dry] [--pbs] [--quiet]
+  run.py [--input=INPUT] [--dry] [--pbs] [--quiet] [-q, --queue]
 
 Options:
   --input=INPUT         A JSON file containing the run information to be executed
   --dry                 Performs a dry run. Shows what will be run, without actually running.
   --pbs                 Create and submit a PBS script instead
-  -q --quiet            Does not warn when there are t_check issues 
+  --quiet            Does not warn when there are t_check issues 
 """
 
 import os
@@ -16,7 +16,7 @@ import sys
 import json
 import shutil
 import itertools
-from processruns.runner import permute_runs, run_command, pbs_command
+from processruns.runner import permute_runs, q_command, run_command, pbs_command
 from processruns.parser import parse_headers
 from docopt import docopt
 
@@ -50,7 +50,7 @@ for r in runs:
         sys.exit()
 
     # Create the folder recursively, naming each run accordingly
-    for i in range(1, 1000):
+    for i in range(1, 5000):
         folder = os.path.join(r['folder'], 'run%d' % i)
         if not os.path.isdir(folder):
             if not args['--dry']:
@@ -62,52 +62,56 @@ for r in runs:
     # will detect these events and either error, or gracefully correct where
     # possible. 
     if i > 1:
-        filename = os.path.join(r['folder'], 'run1', 'out_raw')
-        if not os.path.isfile(filename):
-            if not args['--quiet']:
-                sys.stderr.write("Could not find output of previous run: %s\n" % filename)
-            continue
-
-        try:
-            headers = parse_headers(filename)
-        except FileParserError as e:
-            sys.stderr.write(e)
-            continue
-
-        # Did the header have to boot?
-        h_boot = True if 'boot' in headers[0]['opts'] else False
-
         # Does this run need to boot?
         if '-boot' in r['options'] and r['options']['-boot'] == '1':
             r_boot = True
         else:
             r_boot = False
+        
+        if '-t_check' not in r['options'] and not r_boot:
+            r['options']['-t_check'] = 1
 
-        # If the first run booted, then do not boot subsequent runs
-        if h_boot and r_boot:
-            if not args['--quiet']:
-                sys.stderr.write("Warning: Already have a run with t_check, disabling boot option and continuing.\n")
-            r['options']['-boot'] = '0'
-
-        # Check that there are two booted headers
-        if h_boot:
-            if len(headers) != 2 or 'new t_check' not in headers[-1]['opts']:
+        if r_boot:
+            filename = os.path.join(r['folder'], 'run1', 'out_raw')
+            if not os.path.isfile(filename):
                 if not args['--quiet']:
-                    sys.stderr.write("Error: Original boot process has not completed. %s\n" % filename)
+                    sys.stderr.write("Could not find output of previous run: %s\n" % filename)
                 continue
 
-            t_check = headers[1]['opts']['new t_check']
-        else:
-            if 't_check' not in headers[0]['opts']:
-                if not args['--quiet']:
-                    sys.stderr.write("Error: Unable to parse t_check from original run: %s\n" % filename)
+            try:
+                headers = parse_headers(filename)
+            except FileParserError as e:
+                sys.stderr.write(e)
                 continue
 
-            t_check = headers[0]['opts']['t_check']
+            # Did the header have to boot?
+            h_boot = True if 'boot' in headers[0]['opts'] else False
 
-        # If the t_check doesn't exist, or doesn't match, set it
-        if '-t_check' not in r['options'] or r['options']['-t_check'] != t_check:
-            r['options']['-t_check'] = t_check
+            # If the first run booted, then do not boot subsequent runs
+            if h_boot and r_boot:
+                if not args['--quiet']:
+                    sys.stderr.write("Warning: Already have a run with t_check, disabling boot option and continuing.\n")
+                r['options']['-boot'] = '0'
+
+            # Check that there are two booted headers
+            if h_boot:
+                if len(headers) != 2 or 'new t_check' not in headers[-1]['opts']:
+                    if not args['--quiet']:
+                        sys.stderr.write("Error: Original boot process has not completed. %s\n" % filename)
+                    continue
+
+                t_check = headers[1]['opts']['new t_check']
+            else:
+                if 't_check' not in headers[0]['opts']:
+                    if not args['--quiet']:
+                        sys.stderr.write("Error: Unable to parse t_check from original run: %s\n" % filename)
+                    continue
+
+                t_check = headers[0]['opts']['t_check']
+
+            # If the t_check doesn't exist, or doesn't match, set it
+            if '-t_check' not in r['options'] or r['options']['-t_check'] != t_check:
+                r['options']['-t_check'] = t_check
 
     # Copy the executable to the new folder
     exe_name = os.path.join(".", os.path.basename(r['executable']))
@@ -144,6 +148,16 @@ for r in runs:
         pid = pbs_command(command, r['filename'], pbs_file, job_name=job_name,
                 folder=folder, cwd=folder, queue=r['queue'],
                 hours=r['wallhours'])
+    elif args['--queue']:
+        job_name = "%s_%s" % (r['options']['-d'], r['options']['-p'])
+
+        if 'wallhours' not in r or 'memory' not in r:
+            sys.stderr.write("You must include `wallhours` and `memory` in your `--input` when using queue submit.\n");
+            continue
+
+        pid = q_command(command, r['filename'], job_name=job_name,
+                folder=folder, cwd=folder,
+                hours=r['wallhours'], memory=r['memory'])
     else:
         pid = run_command(command, r['filename'], folder=folder, cwd=folder)
 

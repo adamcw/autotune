@@ -34,6 +34,36 @@ DP_QC *dp_create_dp_qc(int s0, int s1, int de_ht_size, int stick_ht_size, double
 	dp_qc->p = p;
 
 	// Load the default error models
+	dp_init_dp_qc(dp_qc, ems);
+
+	return dp_qc;
+}
+
+/**
+ * \brief 
+ * 
+ * \param[in] 
+ */
+DP_QC *dp_create_dp_qc_adv(int s0, int s1, int de_ht_size, int stick_ht_size, double p, int t_delete, RECIPE_ADV *recipe, char *ems) {
+	DP_QC *dp_qc;
+	QC *qc;
+
+	dp_qc = (DP_QC *)my_malloc(sizeof(DP_QC));
+	dp_qc->qc = qc = (QC *)qc_create_qc_adv(s0, s1, de_ht_size, stick_ht_size, t_delete, recipe);
+	dp_qc->p = p;
+
+	// Load the default error models
+	dp_init_dp_qc(dp_qc, ems);
+
+	return dp_qc;
+}
+
+/**
+ * \brief 
+ * 
+ * \param[in] 
+ */
+void dp_init_dp_qc(DP_QC *dp_qc, char *ems) {
 	dp_qc->init_X_id = dp_load_error_model(dp_qc, ems, "init_X_em");
 	dp_qc->init_Z_id = dp_load_error_model(dp_qc, ems, "init_Z_em");
 	dp_qc->H_id = dp_load_error_model(dp_qc, ems, "H_em");
@@ -50,8 +80,6 @@ DP_QC *dp_create_dp_qc(int s0, int s1, int de_ht_size, int stick_ht_size, double
 	dp_qc->iden_swap_id = dp_load_error_model(dp_qc, ems, "iden_swap_em");
 	dp_qc->iden_meas_X_id = dp_load_error_model(dp_qc, ems, "iden_meas_X_em");
 	dp_qc->iden_meas_Z_id = dp_load_error_model(dp_qc, ems, "iden_meas_Z_em");
-
-	return dp_qc;
 }
 
 /**

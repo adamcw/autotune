@@ -3,27 +3,3 @@ Standard surface code simulator.
 
 ex2:
 Standard topological cluster state simulator.
-
-ex3:
-First attempt at a low p asymptotic analyser, discrepancies with simulations observed at distances 6+.
-
-ex4:
-First attempt at database logical error rate upper bounder. No interpolation or extrapolation, rigid input format.
-
-ex5:
-Second attempt at database logical error rate upper bounder. More flexible input, interpolation and extrapolation, desire are better conversion algorithm from detailed error model to single variable balanced depolarizing.
-
-ex6:
-Direct multi-qubit measurement surface code simulator.
-
-ex7:
-Combination of ex3 and ex5.
-
-ex7b:
-Upgrade of the previous file to better integrate with the TORQUE tools.
-
-ex8:
-Slightly broken upgrade of the previous file bounding the physical error model error rates in a much better manner.
-
-ex9:
-Polybound example.

@@ -14,6 +14,7 @@ here. All programs with `--input` or `--output` flags will read from `stdin` and
 `stdout`, respectively, by default.
 
 The pipeline includes:
+
 - run.py
 - parseruns.py
 - listruns.py 
@@ -23,75 +24,83 @@ The pipeline includes:
 
 ## Installation ##
 
-The Autotune development pipeline comprises of both code written in Python and
-in C. You will need at Python v2.7 or greater, and any version of `gcc` to compile the
+The Autotune processing pipeline comprises of both code written in Python and
+in C. You will need Python v2.7, and any version of `gcc` to compile the
 C.
 
-First, we use `make` to build `convertruns`.
+The processing pipeline should be automatically built during the `Autotune`
+installation process. If this failed or you can install using:
 
-    make
+    cd ./Autotune;
+    make -C ./process install;
 
-Now we need to ensure we have a Python environment with all the necessary
-packages. The pipeline depends on the Python packages `parse` and `docopt`, with
+The pipeline depends on the Python packages `parse` and `docopt`, with
 specifications available in `requirements.txt`. The installation of these
 packages will depend on the environment in which they are being installed.
 
-### With installation privileges ### 
+If you have `python` and `pip` installed, with the privileges to install new
+packages, then the `make install` process will automatically install the
+requirements for you. If you do not have permissions to install packages to the
+global `python` installation, as in many cluster environments, you will need to
+follow the virtualenv (virtual environment) process. `make install` will
+indicate this if it fails.
 
-If you can install new Python packages, installation is simple.
+If you succeeded at this step, you can skip down to "Example of Usage".
 
-    pip install -r requirements.txt
+### Creating a Virtual Environment ###
 
-This command will use pip to install all the required versions of the
-libraries and you'll be good to go.
+A virtualenv is essentially just a bash script that will modify your PATH so
+that commands like `python` and `pip` refer to locally installed versions
+rather than globally installed ones. This allows the installation of packages
+to the local `python` when permissions to install to the global `python` are
+not available. 
 
-It should be noted, that to avoid package versioning conflicts between
-different software, you may wish to use `virtualenv` detailed in the "Without
-installation privileges" section anyway, instead of this direct method.
+If `pip` is not found, `make install` will inform you to use `make virtualenv` to
+try and create a virtualenv (virtual environment) in which to install pip. This
+can be done at any permission level provided `virtualenv` is provided to you.
+If this works it will create a virtual environment containing `pip`, install
+the required Python packages and then give you instructions on using the
+virtualenv. 
 
-### Without installation privileges ###
+If `virtualenv` is not found, `make virtualenv` will inform you to use `make
+virtualenv_install` which will download `virtualenv` to the local directory,
+install it, create a virtual environment containing `pip`, install the required
+Python packages and then give you instructions on using the virtualenv. 
 
-Without installation privileges, there is still hope. A great piece of software
-called `virtualenv` allows for the creation of a virtual user level Python
-environment where packages can be installed. On environments where package
-installation is generally not provided, you may have already come across this
-in the past.
+### Using a Virtual Environment ###
 
-If `virtualenv` is already available in your environment, or can be installed
-by a sysadmin, then you can simply type:
+After successfully installing/creating a virtualenv, the build process should
+show you the following instructions:
 
-    virtualenv AutotuneVE;
-    AutotuneVE/bin/pip install -r requirements.txt;
+    *********************************
+    PLEASE READ: USAGE INSTRUCTIONS 
+    *********************************
 
-If not, you will need to download it:
+    Type to update your PATH to use virtualenv (virtual environment):
 
-    wget https://pypi.python.org/packages/source/v/virtualenv/virtualenv-1.9.1.tar.gz;
-    tar xvfz virtualenv-1.9.1.tar.gz;
-    python virtualenv-1.9.1/virtualenv.py AutotuneVE;
-    AutotuneVE/bin/pip install -r requirements.txt;
+        cd ./process;
+        source AutotuneVE/bin/activate;
 
-This process with download and unpack `virtualenv` into the current directory.
-It will then initialise a new virtual Python environment called `AutotuneVE`
-and install the requirements into the environment. Do not worry if `pip` is not
-available in your environment, `virtualenv` includes `pip`.
+    To stop using this virtualenv.
 
-In order to use the pipline, you can "activate" the virtual environment, which
-will essentially change the PATH to make use of the virtual environment. 
+        deactivate;
 
+    Please see 'process/README.md' for more information.
+
+In order to use a virtualenv you must "activate" it by running:
+
+    cd ./process;
     source AutotuneVE/bin/activate;
 
-Now any scripts calling `python`, such as these, will use the Python in the
-virtual environment, and hence have access to the packages required.
+This will update your path and from then on scripts looking for `python`, such
+as those in the processing pipeline, will use the local version of `python` in
+the virtualenv. 
 
-To stop using the virtual environment you can simply type:
+To return to using the global version of `python` for any reason, the
+virtualenv can be disabled using:
 
     deactivate;
 
-If this process fails you can download the two libraries required manually,
-however this is recommended only as a last resort:
-
-    wget https://raw.github.com/r1chardj0n3s/parse/master/parse.py
-    wget https://raw.github.com/docopt/docopt/master/docopt.py
 
 ## Example of Usage ##
 
@@ -239,10 +248,11 @@ Example of the row dictionary:
 #### Description ####
 
 This is not part of the graphing pipeline but can be used to list all the runs
-in a directory and see an overview of progress and completion. This is useful
-while performing a lot of runs to see at a glance the status of all the runs.
-This is an example of a piece of software that can be built on top of the
-output of parseruns.py
+in a directory and see an overview of progress and completion. This program
+takes the output of parseruns.py to operate. This script is useful while
+performing a lot of runs to see at a glance the status of all the runs.  This
+is an example of a piece of software that can be built on top of the output of
+parseruns.py
 
 
 
@@ -322,3 +332,71 @@ modified to use a plotting library or program of choice.
 
 In addition it provides the ability to generate data for polynomial lines that
 can be specified as command line arguments.
+
+
+
+## Manual Installation Process ##
+
+### WARNING ###
+
+The `make install` process should suffice for the large number of users, please
+read the above instructions first. These instructions mostly detail what the
+`make install` process already does automatically based on what it detects
+available on your system. 
+
+### With installation privileges ### 
+
+If you can install new Python packages, installation is simple.
+
+    pip install -r requirements.txt
+
+This command will use pip to install all the required versions of the
+libraries and you'll be good to go.
+
+It should be noted, that to avoid package versioning conflicts between
+different software, you may wish to use `virtualenv` detailed in the "Without
+installation privileges" section anyway, instead of this direct method.
+
+### Without installation privileges ###
+
+Without installation privileges, there is still hope. A great piece of software
+called `virtualenv` allows for the creation of a virtual user level Python
+environment where packages can be installed. On environments where package
+installation is generally not provided, you may have already come across this
+in the past.
+
+If `virtualenv` is already available in your environment, or can be installed
+by a sysadmin, then you can simply type:
+
+    virtualenv AutotuneVE;
+    AutotuneVE/bin/pip install -r requirements.txt;
+
+If not, you will need to download it:
+
+    wget https://pypi.python.org/packages/source/v/virtualenv/virtualenv-1.10.tar.gz;
+    tar xvfz virtualenv-1.10.tar.gz;
+    python virtualenv-1.10/virtualenv.py AutotuneVE;
+    AutotuneVE/bin/pip install -r requirements.txt;
+
+This process with download and unpack `virtualenv` into the current directory.
+It will then initialise a new virtual Python environment called `AutotuneVE`
+and install the requirements into the environment. Do not worry if `pip` is not
+available in your environment, `virtualenv` includes `pip`.
+
+In order to use the pipline, you can "activate" the virtual environment, which
+will essentially change the PATH to make use of the virtual environment. 
+
+    source AutotuneVE/bin/activate;
+
+Now any scripts calling `python`, such as these, will use the Python in the
+virtual environment, and hence have access to the packages required.
+
+To stop using the virtual environment you can simply type:
+
+    deactivate;
+
+If this process fails you can download the two libraries required manually,
+however this is recommended only as a last resort:
+
+    wget https://raw.github.com/r1chardj0n3s/parse/master/parse.py
+    wget https://raw.github.com/docopt/docopt/master/docopt.py

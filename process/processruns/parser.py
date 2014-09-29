@@ -29,12 +29,12 @@ def parse_headers(filename, parser=None, opt_parser=None):
     if not parser:
         parser = DEFAULT_PARSER
     if not isinstance(parser, parse.Parser):
-        raise ValueError("The provided parser is not of type parse.Parser")
+        raise ValueError("The provided parser is not of type parse.Parser\n")
 
     if not opt_parser:
         opt_parser = DEFAULT_OPT_PARSER
     if not isinstance(opt_parser, parse.Parser):
-        raise ValueError("The provided option parser is not of type parse.Parser")
+        raise ValueError("The provided option parser is not of type parse.Parser\n")
 
     fp = open(filename, 'r+')
 
@@ -45,6 +45,8 @@ def parse_headers(filename, parser=None, opt_parser=None):
         if parser.parse(line):
             # If we already have two headers, stop searching
             if len(headers) == MAX_NUM_HEADERS:
+                break
+            if headers[-1]['opts'].get('new t_check', False):
                 break
             in_header = False
         else:
@@ -74,13 +76,16 @@ def parse_tail(filename, parser=None):
     if not parser:
         parser = DEFAULT_PARSER
     if not isinstance(parser, parse.Parser):
-        raise ValueError("The provided parser is not of type parse.Parser")
+        raise ValueError("The provided parser is not of type parse.Parser\n")
 
     out = subprocess.check_output(['tail', '-n', '1', filename]).strip()
     pa = parser.parse(out)
     
     if not pa:
-        raise FileParserError("An error occured reading the file: %s" % filename)
+        out = subprocess.check_output(['tail', '-n', '2', filename]).strip().split("\n")[0]
+        pa = parser.parse(out)
+        if not pa:
+            raise FileParserError("An error occured reading the file: %s\n" % filename)
         
     return pa
 
@@ -99,7 +104,7 @@ def parse_runs(runs_dir, args):
     try:
         distances = get_dirs(runs_dir)
     except OSError:
-        sys.sterr.write("Could not find runs directory: %s\n" % path)
+        sys.stderr.write("Could not find runs directory: %s\n" % path)
         sys.exit()
 
     for d in distances:
@@ -109,6 +114,9 @@ def parse_runs(runs_dir, args):
             for t_delete in t_deletes:
                 runs = get_dirs(runs_dir, d, p, t_delete)
                 for run in runs:
+                    #if not (int(run[3:]) > 10 and int(run[3:]) < 15):
+                    #    continue
+
                     filename = os.path.join(runs_dir, d, p, t_delete, run, AUTOTUNE_OUTPUT)
                     if not os.path.isfile(filename):
                         if not args['--quiet']:
@@ -120,19 +128,16 @@ def parse_runs(runs_dir, args):
                         pa = parse_tail(filename)
                     except FileParserError as e:
                         if not args['--quiet']:
-                            sys.stderr.write(e)
+                            sys.stderr.write(e.message)
                         continue
                         
                     opts = headers[-1]['opts']
 
                     # Grab the value of t_check
-                    if len(headers) == 1:
-                        t_check = opts['t_check']
-                    else:
-                        t_check = opts['new t_check']
+                    t_check = opts.get('new t_check', opts.get('t_check', False))
 
                     # Determine if the run has booted or not
-                    boot = headers[0]['opts']['boot']
+                    boot = headers[0]['opts'].get('boot', False)
                     if not boot:
                         booted = "NA"
                     elif len(headers) == 2:
@@ -150,7 +155,7 @@ def parse_runs(runs_dir, args):
                     filters = [
                         args['--complete'] and done == "No",
                         args['--incomplete'] and done == "Yes",
-                        args['--booted'] and booted != "Yes",
+                        args['--booted'] and booted == "No",
                         args['--unbooted'] and booted == "Yes",
                     ]
                     if any(filters):

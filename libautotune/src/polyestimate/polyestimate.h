@@ -42,6 +42,7 @@ int pe_convert_json_to_em(cJSON *json, char *ems_dir);
 void pe_convert_json_to_em_line(cJSON *json, FILE *out);
 
 double pe_max(double a, double b, double c);
+double pe_av(double a, double b, double c);
 void pe_convert_ems_to_ps3s(double p, ERROR_MODEL **ems, double *ps3x, double *ps3z);
 
 void pe_convert_json_to_ps(cJSON *json, double *ps);
