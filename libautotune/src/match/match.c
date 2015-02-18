@@ -34,7 +34,7 @@ MATCHING *m_create_matching(int t_delete) {
 	matching->u = NULL;
 
 	matching->g = bfs_create_graph();
-	matching->t_bfs = 0;
+	matching->t_bfs = -1;
 
 	// lattice
 	matching->dots = cdll_create();
