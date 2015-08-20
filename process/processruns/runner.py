@@ -14,7 +14,7 @@ def run_command(command, filename, folder="./", cwd="./"):
 def q_command(command, filename, job_name, folder="./", cwd="./", memory="2G", hours="200"):
     if not os.path.isdir(folder):
         os.makedirs(folder)
-    
+
     ASHLEY_PATH = "/home/projects/pMelb0003/ashley"
     PYTHON = "{}/QueueVE/bin/python".format(ASHLEY_PATH)
     Q = "{}/queue.py".format(ASHLEY_PATH)
@@ -26,7 +26,7 @@ def q_command(command, filename, job_name, folder="./", cwd="./", memory="2G", h
     print " ".join(cmd)
 
     return subprocess.Popen(cmd, stdin=fp, stdout=fp, stderr=fp, cwd=cwd).pid
- 
+
 def pbs_command(command, filename, pbs_file, job_name, folder="./", cwd="./", queue="ashley", hours="200"):
     command_string = " ".join([x for x in command if x])
 
@@ -37,7 +37,7 @@ def pbs_command(command, filename, pbs_file, job_name, folder="./", cwd="./", qu
     fp.write("#PBS -q %s\n" % queue)
     fp.write("#PBS -l walltime=%s:00:00\n" % hours)
     fp.write("cd $PBS_O_WORKDIR\n")
-    fp.write("%s > %s" % (command_string, filename)) 
+    fp.write("%s > %s" % (command_string, filename))
     fp.close()
 
     return subprocess.call(["qsub", pbs_file], cwd=cwd)
@@ -99,11 +99,11 @@ def permute_runs(schema):
                     'options': b,
                 })
 
-                if run['queue']:
+                if 'queue' in run:
                     runs[-1].update({'queue': run['queue']})
-                if run['wallhours']:
+                if 'wallhours' in run:
                     runs[-1].update({'wallhours': run['wallhours']})
-                if run['memory']:
+                if 'memory' in run:
                     runs[-1].update({'memory': run['memory']})
 
     return runs
