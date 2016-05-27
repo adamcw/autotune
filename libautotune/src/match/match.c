@@ -3,13 +3,12 @@
 #include "match.h"
 #include "../memory/memory.h"
 #include "../bfs/bfs.h"
-#include "../fast_hash/fasthash.h"
 
 #define MATCHING_DOT_HASH_SIZE 15485863
 
 /**
- * \brief Creates a new \ref matching 
- * 
+ * \brief Creates a new \ref matching
+ *
  * \param[in] t_delete The number of timesteps to keep in memory for matching
  *
  * \return The newly created \ref matching
@@ -21,9 +20,6 @@ MATCHING *m_create_matching(int t_delete) {
 
 	// min_horz_wt * d
 	matching->D = INT_MAX;
-
-	// Initialise the BlossomV Perfect Matching
-	matching->pm = NULL;
 
 	matching->last_graph_head = NULL;
 	matching->last_graph_tail = NULL;
@@ -48,7 +44,7 @@ MATCHING *m_create_matching(int t_delete) {
 	matching->num_vertices = 0;
 
 	matching->augmented_edges = cdll_create();
-	
+
 	// time variables
 	matching->t = 0;
 	matching->t_delete = t_delete;
@@ -59,7 +55,7 @@ MATCHING *m_create_matching(int t_delete) {
 
 /**
  * \brief Frees a \ref matching
- * 
+ *
  * \param[in] matching The \ref matching to be freed
  */
 void m_free_matching(MATCHING *matching) {
@@ -267,83 +263,6 @@ void m_free_dots_and_lines_bfs(BFS_GRAPH *g) {
 }
 
 /**
- * \brief Creates a new structure to track the state of Blossom V
- * 
- * \param[in] num_vertices The number of vertices to be matched
- *
- * \return The newly created \ref BlossomV structure
- */
-BLOSSOMV *m_create_blossomv(int num_vertices) {
-	BLOSSOMV *bv;
-
-	bv = (BLOSSOMV *)my_malloc(sizeof(BLOSSOMV));
-	bv->alloc_edges = 8;
-
-	bv->num_edges = 0;
-	// We need twice as many vertices because each vertex will have an
-	// accompanying boundary vertex
-	bv->num_vertices = 2 * num_vertices;
-	bv->edges = (int *)my_malloc(sizeof(int) * 2 * bv->alloc_edges);
-	bv->weights = (int *)my_malloc(sizeof(int) * bv->alloc_edges);	
-	bv->vertices = (VERTEX **)my_malloc(sizeof(VERTEX *) * bv->num_vertices);
-
-	return bv;
-}
-
-/**
- * \brief Frees a Blossom V structure
- * 
- * \param[in] bv The \ref BlossomV structure to be freed
- */
-void m_free_blossomv(BLOSSOMV *bv) {
-	free(bv->edges);
-	free(bv->weights);
-	free(bv->vertices);
-	free(bv);
-}
-
-/**
- * \brief Adds a vertex to the Blossom V state
- * 
- * \param[out] bv The \ref BlossomV structure to insert the \ref vertex into
- * \param[in] v The \ref vertex to insert
- * \param[in] pos The position to insert the \ref vertex into 
- *
- * \return The BlossomV ID, the position in the BlossomV state
- */
-int m_add_vertex_to_blossomv(BLOSSOMV *bv, VERTEX *v, int pos) {
-	if (pos < 0) {
-		pos = (bv->num_vertices / 2) - pos - 1;
-	}
-	//m_print_void_vertex(v);
-	//printf("%d into %d\n", pos, bv->num_vertices);
-	bv->vertices[pos] = v;
-	return pos;
-}
-
-/**
- * \brief Adds an edge to the Blossom V state
- * 
- * \param[out] The \ref BlossomV structure to insert the \ref edge into
- * \param[in] a The BlossomV ID of the source \ref vertex 
- * \param[in] b The BlossomV ID of the destination \ref vertex 
- * \param[in] wt The weight of the edge 
- */
-void m_add_edge_to_blossomv(BLOSSOMV *bv, int a, int b, int wt) {
-	bv->edges[2*bv->num_edges] = a;
-	bv->edges[2*bv->num_edges+1] = b;
-	bv->weights[bv->num_edges] = wt;
-	bv->num_edges++;
-
-	// Resize if nessecary
-	if (bv->num_edges >= bv->alloc_edges) {
-		bv->alloc_edges = bv->alloc_edges << 1;
-		bv->edges = (int *)my_realloc(bv->edges, sizeof(int) * 2 * bv->alloc_edges);
-		bv->weights = (int *)my_realloc(bv->weights, sizeof(int) * bv->alloc_edges);
-	}
-}
-
-/**
  * \brief Creates an augmented edge between two vertices
  * 
  * \param[out] matching The matching to insert the augmented edge into
@@ -407,157 +326,8 @@ void m_create_and_insert_vertex_and_edge_into_bfs(BFS_GRAPH *g, DOT *a, DOT *b, 
 }
 
 /**
- * \brief Solves the \ref matching of a given \ref BlossomV state
- * 
- * \param[in,out] matching The matching to be solved
- * \param[in] bv The BlossomV state containing the vertices and edges to be matched 
- */
-void m_solve(MATCHING *matching, BLOSSOMV *bv) {
-	int i;
-	struct PerfectMatching::Options options;
-	
-	// Initialise the BlossomV Perfect Matching
-	//printf("num_vertices: %d, num_edges: %d\n", bv->num_vertices, bv->num_edges);
-	if (bv->num_vertices > 0 && bv->num_edges < bv->num_vertices / 2) {
-		m_print_graph(matching);
-		m_print_lattice(matching);
-		assert(bv->num_vertices == 0 || bv->num_edges >= bv->num_vertices / 2);
-	}
-	
-	matching->pm = new PerfectMatching(bv->num_vertices, bv->num_edges);
-	options.verbose = false;
-	options.fractional_jumpstart = true;
-	matching->pm->options = options;
-
-	// You can technically feed these in backwards, but this will break the
-	// code. The order you read them in, then means Blossom V solves them in
-	// the different order which makes reading them back out and then their
-	// positions get all messed up. I started doing this then just gave up
-	// because I'm not even sure if Blossom V's output is dependent on edge
-	// order, or if it is on the vertex numbering. Hence, it wasn't worth the
-	// continued effort to implement reverse order edges before I know if it'll
-	// actually do anything.
-	//printf("%d %d\n", bv->num_vertices, bv->num_edges);
-	for (i = 0; i < bv->num_edges; i++) {
-		matching->pm->AddEdge(bv->edges[2*i], bv->edges[2*i+1], bv->weights[i]);
-	}
-
-	matching->pm->Solve();
-
-	//double cost = ComputePerfectMatchingCost(bv->num_vertices, bv->num_edges, bv->edges, bv->weights, matching->pm);
-	//printf("%d %d cost = %.1f\n", bv->num_vertices, bv->num_edges, cost);
-
-	//m_print_graph(matching);
-	//m_print_lattice(matching);
-}
-
-/**
- * \brief Creates new augmented edges based on newly matched edges that have
- * been modified since the last matching
- * 
- * \param[in] matching The matching to obtain augmented edges from
- * \param[in] bv The \ref BlossomV state 
- * \param[in] undo Whether or not the created augmented edges should be
- * undoable 
- */
-void m_create_augmented_edges(MATCHING *matching, BLOSSOMV *bv, int undo) {
-	int i;
-	VERTEX *v1, *v2;
-	EDGE *e, *eb;
-	
-	// This could perhaps be implemented more efficiently. However, given the
-	// large amount of time spent on the BFS, it is currently unknown if this
-	// inefficiency would lead to significant enough time savings to justify
-	// its implementation. Would require a way to find the edge between two
-	// BlossomV NodeIds more efficiently than looping all the edges, which is
-	// no more efficient than just looping them all here. If you were to create
-	// a hash table, this still requires a loop of the edges to create, and
-	// it's not readily apparent how you could keep these hash tables from
-	// round to round given that NodeIds change every round.
-
-	for (i = 0; i < bv->num_edges; i++) {
-		if (matching->pm->GetSolution(i) == 1) {
-			if (bv->weights[i] > 0) {
-				v1 = bv->vertices[bv->edges[2*i]];
-				v2 = bv->vertices[bv->edges[2*i+1]];
-
-				if (v1->matched_edge && v1->matched_edge->dest_vertex == v2) {
-					continue;
-				}
-
-				if ((v1->t > matching->t - matching->t_delay && v1->v_num >= 0) || (v2->t > matching->t - matching->t_delay && v2->v_num >= 0)) {
-					continue;
-				}
-
-				// Delete the old matched edge
-				if (v1->matched_edge) {
-					assert(v1->matched_edge->source_vertex == v1);
-
-					if (undo == TRUE) {
-						// Save where both vertices were previously connected to
-						m_create_undo(matching, UNDO_DELETE_EDGE, v1, 0, NULL, v1->matched_edge->dest_vertex, NULL);
-					}
-
-					// Need to undo the previous edge
-					m_create_augmented_edge(matching, v1, v1->matched_edge->dest_vertex);
-
-					// Clean up any matched edges pointing from old end points 
-					v1->matched_edge->dest_vertex->matched_edge = NULL;
-
-					// Delete the existing matched edges
-					m_delete_only_edge(v1->matched_edge->backward_edge);
-					m_delete_only_edge(v1->matched_edge);
-
-					// Set the matched edges of both vertices to NULL
-					v1->matched_edge = NULL;
-				}
-
-				if (v2->matched_edge) {
-					if (undo == TRUE) {
-						m_create_undo(matching, UNDO_DELETE_EDGE, v2, 0, NULL, v2->matched_edge->dest_vertex, NULL);
-					}
-				
-					m_create_augmented_edge(matching, v2, v2->matched_edge->dest_vertex);
-
-					v2->matched_edge->dest_vertex->matched_edge = NULL;
-
-					m_delete_only_edge(v2->matched_edge->backward_edge);
-					m_delete_only_edge(v2->matched_edge);
-					
-					v2->matched_edge = NULL;
-				}
-
-				// Create the new matched edge
-				e = m_create_only_edge(v1, v2);
-				eb = m_create_only_edge(v2, v1);
-				e->backward_edge = eb;
-				eb->backward_edge = e;
-
-				if (undo == TRUE) {
-					m_create_undo(matching, UNDO_MATCHED_EDGE, v1, 0, v1->matched_edge, NULL, NULL);
-					if (v2->v_num >= 0) {
-						m_create_undo(matching, UNDO_MATCHED_EDGE, v2, 0, v2->matched_edge, NULL, NULL);
-					}
-				}
-
-				v1->matched_edge = e;
-				if (v2->v_num >= 0) {
-					v2->matched_edge = eb;
-				}
-
-				m_create_augmented_edge(matching, v1, v2);
-			}
-		}
-	}
-}
-
-/**
  * \brief Performs all nessecary steps to perform minimum-weight perfect
  * matching
- *
- * Updates the BFS structure, finds and creates the vertices and edges that
- * require matching, builds the BlossomV state, matches using the BlossomV
- * library, then creates augmented edges from the result.
  * 
  * \param[in,out] matching The \ref matching to match
  * \param[in] undo Whether the matching should be undoable 
@@ -569,7 +339,6 @@ void m_mwpm(MATCHING *matching, int undo) {
 	VERTEX *v1;
 	CDLL_NODE *node;
 
-	BLOSSOMV *bv;
 	BFS_VERTEX *bfsv1;
 
 	//m_print_graph(matching);
@@ -600,11 +369,6 @@ void m_mwpm(MATCHING *matching, int undo) {
 
 	matching->last_graph_head = matching->graph->next;
 	matching->last_graph_tail = matching->graph->prev;
-	
-	// Initialise the Blossom V structure
-	bv = m_create_blossomv(matching->num_vertices);
-
-	//printf("Num Vertices: %d, %d\n", matching->num_vertices, bv->num_vertices);
 
 	// Loop over the vertices in the matching and perform a BFS from each
 	// connecting each to one another.
@@ -615,8 +379,6 @@ void m_mwpm(MATCHING *matching, int undo) {
 		a = v1->dot;
 		assert(a->bfs != NULL);
 
-		// Vertices need to start at 0 for Blossom V. Since we have likely
-		// trimmed with t_delete, we need to offset the v_nums to start at 0.
 		v_num = a->v->v_num - offset;
 
 		// Boundaries need to start at -1, since -0 is 0 and hence wouldn't be
@@ -624,8 +386,6 @@ void m_mwpm(MATCHING *matching, int undo) {
 		bdy_num = -(v_num + 1);
 
 		//printf("v_num: %d, bdy_num: %d\n", v_num, bdy_num);
-
-		v_num1 = m_add_vertex_to_blossomv(bv, a->v, v_num);
 
 		if (a->bfs != NULL) {
 			// This init adds about 2s to 100 changes without augmentation 
@@ -666,20 +426,9 @@ void m_mwpm(MATCHING *matching, int undo) {
 
 					// We found a boundary, congrats. Now on to Carmen Sandiego.
 					found_bdy = TRUE;
-					v_num2 = m_add_vertex_to_blossomv(bv, b->v, bdy_num); 
 
 					// Connect this boundary to all other inserted boundaries
 					for (i = matching->num_vertices; i <= v_num2 - 1; i++) {
-						// We do not want to connect normal boundaries to the
-						// temporal boundaries, as this leads to matching
-						// vertices to things other than the temporal boundary.
-						// The temporal boundary is less of a boundary and more
-						// of a fixed matching to avoid issues with BlossomV
-						// rematching after t_delete.
-						if (bv->vertices[i]->t == -INT_MAX) {
-							continue;
-						}
-						m_add_edge_to_blossomv(bv, v_num2, i, 0);
 					}	
 				} 
 				else if (b->v->t == -INT_MAX) {
@@ -692,13 +441,10 @@ void m_mwpm(MATCHING *matching, int undo) {
 					}
 
 					found_bdy = TRUE;
-					v_num2 = m_add_vertex_to_blossomv(bv, b->v, bdy_num);
 				}
 				else {
 					v_num2 = b->v->v_num - offset;
 				}
-			
-				m_add_edge_to_blossomv(bv, v_num1, v_num2, bfsv1->d);
 
 				bfsv1 = bfs_get_next_v(matching->g);
 			}
@@ -710,20 +456,11 @@ void m_mwpm(MATCHING *matching, int undo) {
 		node = node->prev;
 	}
 
-	// Solve using Blossom V
-	m_solve(matching, bv);
-
-	// Create the augmented edges from the solution
-	m_create_augmented_edges(matching, bv, undo);
-
 	//if (matching->augmented_edges->next != matching->augmented_edges) {
 		//m_print_augmented_edges(matching);
 		//m_print_graph(matching);
 		//m_print_lattice(matching);
 	//}
-
-	delete matching->pm;
-	m_free_blossomv(bv);
 }
 
 /**
@@ -859,7 +596,6 @@ int m_time_delete(MATCHING *m) {
 		pos[0] = dot->i;
 		pos[1] = dot->j;
 		pos[2] = dot->little_t;
-		hash = abs(fasthash32(pos, 3, 0));
 		ht_delete_key(m->dot_ht, hash, dot, NULL);
 
 		cdll_delete_node(n, m_free_void_dot);
@@ -1462,7 +1198,6 @@ void m_execute_and_delete_undos(MATCHING *matching) {
 			pos[0] = dot->i;
 			pos[1] = dot->j;
 			pos[2] = dot->little_t;
-			hash = abs(fasthash32(pos, 3, 0));
 			ht_delete_key(matching->dot_ht, hash, dot, NULL);
 
 			if (dot->bfs != NULL) {
@@ -1562,7 +1297,6 @@ void m_execute_and_delete_undos(MATCHING *matching) {
 			pos[0] = dot->i;
 			pos[1] = dot->j;
 			pos[2] = dot->little_t;
-			hash = abs(fasthash32(pos, 3, 0));
 			ht_delete_key(matching->dot_ht, hash, dot, NULL);
 
 			// Free the dot and delete the lines linked list backbone

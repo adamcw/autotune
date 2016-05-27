@@ -5,7 +5,6 @@
 #include "qc.h"
 #include "../memory/memory.h"
 #include "../random/random.h"
-#include "../fast_hash/fasthash.h"
 #include <sys/time.h>
 
 //#define DBG_MEAS_QUBIT 1
@@ -6512,8 +6511,6 @@ int qc_hash_ijt(int i, int j, long int t) {
 	pos[0] = i;
 	pos[1] = j;
 	pos[2] = t;
-
-	return abs(fasthash32(pos, 3, 0));
 }
 
 /**

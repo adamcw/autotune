@@ -3,7 +3,6 @@
 
 #include "../qc/qc.h"
 #include "../bfs/bfs.h"
-#include "../../../blossomv/PerfectMatching.h"
 
 /* undo definitions */
 
@@ -32,7 +31,6 @@
 #define TRUE 1
 #define FALSE 0
 
-typedef struct blossomv BLOSSOMV;
 typedef struct edge EDGE;
 typedef struct dot DOT;
 typedef struct line LINE;
@@ -40,37 +38,6 @@ typedef struct aug_edge AUG_EDGE;
 typedef struct vertex VERTEX;
 typedef struct matching MATCHING;
 typedef struct undo UNDO;
-
-/**
- * \brief Stores the state of the matching problem to be passed into the
- * BlossomV module. 
- *
- * BlossomV accepts the problem in the form of two arrays, edges and weights.
- * Edges is a list where each pair of consecutive integers are the source and
- * destination ids of the edge. The weights array then forms a list of the
- * weights of each corresponding edge. Vertex IDs are never passed in, but must
- * start at 0, leading the vertices have IDs in graph space and in BlossomV
- * space.
- */
-struct blossomv {
-	/** The number of vertices to be matched */
-	int num_vertices;
-
-	/** The number of edges in the problem */
-	int num_edges;
-
-	/** The number of edges allocated in memory */
-	int alloc_edges;
-	
-	/** An array of all the edges */
-	int *edges;
-
-	/** An array of the edge weights */
-	int *weights;
-
-	/** An array of all the vertices */
-	VERTEX **vertices;
-};
 
 /* structure definitions */
 
@@ -166,9 +133,6 @@ struct vertex {
 struct matching {
 	/** The maximum distance to search for edges when performing BFS */
 	int D;
-
-	/** The PerfectMatching object from BlossomV module */
-	PerfectMatching *pm;
 
 	/** The vertices in the graph */
 	CDLL_NODE *graph;
@@ -269,16 +233,9 @@ void m_free_undo(MATCHING *matching);
 void m_update_dots_and_lines_into_bfs(MATCHING *matching, BFS_GRAPH *g, int undo); 
 void m_free_dots_and_lines_bfs(BFS_GRAPH *g);
 
-BLOSSOMV *m_create_blossomv(int num_vertices);
-void m_free_blossomv(BLOSSOMV *bv);
-
-int m_add_vertex_to_blossomv(BLOSSOMV *bv, VERTEX *v, int pos);
-void m_add_edge_to_blossomv(BLOSSOMV *bv, int a, int b, int wt);
 void m_create_augmented_edge(MATCHING *m, VERTEX *v1, VERTEX *v2);
 DOT *m_create_temporal_boundary();
 void m_create_and_insert_vertex_and_edge_into_bfs(BFS_GRAPH *g, DOT *a, DOT *b, int wt);
-void m_solve(MATCHING *matching, BLOSSOMV *bv);
-void m_create_augmented_edges(MATCHING *matching, BLOSSOMV *bv, int undo);
 
 void m_mwpm(MATCHING *matching, int undo);
 int m_time_delete(MATCHING *m); 
